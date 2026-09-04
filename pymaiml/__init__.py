@@ -8,17 +8,42 @@ git tag, not to a floating branch -- see README.md for why).
 
 maiml_domain intentionally contains zero business-rule validation and no
 XML (de)serialization -- see its own README for the rationale. Those
-concerns belong here, in the SDK layer:
-  - constructing maiml_domain object trees from convenient, high-level APIs
-  - serializing them to/from real .maiml XML
-  - enforcing the business rules from the MaiML AI Common Specification that
-    the domain model deliberately does not enforce (e.g. the EVT-01/02
-    "complete" event requirement, reference-target type checking, etc.)
+concerns live here, in the SDK layer, split across three modules:
+
+  pymaiml.serialization
+      Convert maiml_domain object trees to/from real MaiML XML
+      (dumps/dump; loads/load is not implemented yet -- see that module).
+
+  pymaiml.validation
+      Validate a .maiml/.maiml.zip/.mai file against the official
+      MaiML-Schema-1_0 XSD (bundled) plus the supplementary business rules
+      from the MaiML AI Common Specification that XSD alone can't express.
+
+  pymaiml.builders
+      Ergonomic helpers that reduce the boilerplate/mistakes of building a
+      maiml_domain object tree by hand: unique id/uuid generation
+      (IdFactory), property/content class inference from a Python value's
+      type (infer_property/infer_content), and the
+      lifecycle:transition="complete" event that validation's EVT-02 rule
+      requires whenever <data> records a measurement (new_complete_event).
+
+Typical usage:
+
+    import maiml_domain as m
+    from pymaiml import serialization, validation
+    from pymaiml.builders import IdFactory, infer_property, new_complete_event
+
+    root = m.MaimlRootType(...)                 # build with maiml_domain + builders
+    serialization.dump(root, "out.maiml", extra_namespaces={...})
+    result = validation.validate("out.maiml")
+    assert result.ok, result
 """
 from __future__ import annotations
 
 import maiml_domain  # noqa: F401  -- proves the dependency wiring works
 
+from . import builders, serialization, validation  # noqa: F401,E402
+
 __version__ = "0.1.0"
 
-__all__ = ["__version__"]
+__all__ = ["__version__", "serialization", "validation", "builders"]

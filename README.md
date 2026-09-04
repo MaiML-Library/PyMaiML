@@ -62,15 +62,41 @@ pip install -e ".[dev]"
 editable版がpip環境内で優先されます)。ただし、CI/リリースビルドでは
 必ず上記のGit+タグ指定の依存関係を使ってください。
 
+## モジュール構成
+
+- `pymaiml.serialization` -- `maiml_domain`のオブジェクトツリーと実際の
+  `.maiml` XMLとの相互変換。`dumps()`/`dump()`(書き出し)を実装済みです。
+  `loads()`/`load()`(読み込み)は未実装です(呼び出すと`NotImplementedError`
+  になります。理由はモジュールのdocstringを参照)。
+  `maiml_domain`の各property/content型はモジュール内のレジストリ
+  (`_xsi_registry.py`)から自動生成されるxsi:type名で判定されるため、
+  70種類ある型のうちどれを使っても個別対応は不要です。
+- `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
+  同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
+  Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、
+  `ref`参照先の型チェック等)の両方で検証します。
+  ```python
+  from pymaiml.validation import validate
+  result = validate("sample.maiml")
+  assert result.ok, result  # result.errors / .warnings / .info も参照可
+  ```
+- `pymaiml.builders` -- オブジェクトツリーを手で組み立てる際の定型作業を
+  減らすヘルパー群。`IdFactory`(id/uuidの重複しない採番)、
+  `infer_property()`/`infer_content()`(Pythonの値の型からproperty/content
+  クラスを推定)、`new_complete_event()`(`lifecycle:transition="complete"`
+  イベントの組み立て)を提供します。
+
 ## テスト
 
 ```bash
+pip install -e ".[dev]"
 pytest
 ```
 
-`tests/test_smoke.py`は、`maiml_domain`への依存が正しく解決されている
-ことだけを確認する最小限のスモークテストです。SDK自体の機能(シリアライズ
-・業務ルール検証など)はこれから実装していきます。
+`tests/test_smoke.py`は`maiml_domain`への依存解決を確認する最小限の
+スモークテストです。`tests/test_serialization.py`・
+`tests/test_validation.py`・`tests/test_builders.py`が上記3モジュールの
+実際の動作(スキーマ検証を通ることを含む)を検証します。
 
 ## ライセンス
 

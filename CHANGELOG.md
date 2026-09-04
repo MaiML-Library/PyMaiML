@@ -37,8 +37,28 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
 ### Added
 - リポジトリの雛形を作成。`maiml_domain`(MaiML-Domain, v0.1.0タグ)への
   pip依存を`pyproject.toml`に定義。
-- パッケージ`pymaiml`の初期構成(`__init__.py`のみ、実装はこれから)。
 - 依存関係の疎通確認用スモークテスト(`tests/test_smoke.py`)。
+- `pymaiml.serialization`: `maiml_domain`のオブジェクトツリーを実際の
+  `.maiml` XMLへ書き出す`dumps()`/`dump()`を実装。MaiML-Domainの検証用
+  スクリプト(`tests/build_sample_maiml.py`)にあった変換ロジックを、
+  document/protocol(method・program階層のtemplateも含む)/data
+  (material/condition/result)/eventLog(extension/global/classifier含む)
+  /pnmlの全構造要素、およびproperty/content約70種類全てに一般化した。
+  `loads()`/`load()`(読み込み方向)は未実装(`NotImplementedError`)。
+- `pymaiml.validation`: 公式MaiML-Schema-1_0(`pymaiml/schema/`に同梱)
+  によるXSD検証と、MaiML AI Common Specificationの補足ルール
+  (EVT-02のlifecycle complete判定、ref参照先の型チェック、XES名前空間
+  の厳密一致、秘匿禁止要素など)を`validate(path) -> ValidationResult`
+  として提供。maiml-schema-validator Claude skillの検証スクリプトと
+  同等のチェックをライブラリAPI化したもの。
+- `pymaiml.builders`: `IdFactory`(id/uuid採番)、
+  `infer_property()`/`infer_content()`(Pythonの値の型からproperty/content
+  クラスを推定)、`new_complete_event()`(EVT-02対応の
+  `lifecycle:transition="complete"`イベント組み立て)を追加。
+- 依存関係に`lxml`を追加(`pymaiml.validation`が使用)。
+- 上記3モジュールに対するテスト(`tests/test_serialization.py`・
+  `tests/test_validation.py`・`tests/test_builders.py`)を追加。生成した
+  `.maiml`が実際にスキーマ検証を通ることまで確認している。
 
 ## [0.1.0] - 未リリース
 

@@ -1,0 +1,3 @@
+The MaiML schema definition files were created by the Japan Analytical Instruments Manufacturers’ Association to assist in verifying that data formats produced in accordance with the Common Data Format Guidelines conform to the Japanese Industrial Standards (JIS). 
+
+These MaiML schema definition files are part of the results of a project commissioned by the Ministry of Economy, Trade and Industry.

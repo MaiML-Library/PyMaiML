@@ -21,6 +21,7 @@ classifiers = [
 ]
 dependencies = [
     "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.1.0",
+    "lxml>=4.9",
 ]
 
 [project.optional-dependencies]
@@ -32,3 +33,6 @@ Repository = "https://github.com/MaiML-Library/PyMaiML"
 
 [tool.setuptools.packages.find]
 include = ["pymaiml*"]
+
+[tool.setuptools.package-data]
+pymaiml = ["schema/MaiML-Schema-1_0/*.xsd", "schema/MaiML-Schema-1_0/*.txt"]
