@@ -1,0 +1,111 @@
+name: Release version check
+
+# バージョニングポリシー(CHANGELOG.mdの「バージョニングポリシー」節)を
+# 自動チェックするワークフロー。
+#
+#   - タグpush時: pyproject.toml の version とタグが一致しているか、
+#     CHANGELOG.md に該当バージョンの項目があるかを確認する。
+#   - x または y (メジャー/マイナー) が変わる、または初回タグの場合は、
+#     GitHub Release の作成が必須。z (パッチ) のみの変更なら、タグだけで良い。
+#
+# 注意: GitHubにはタグpush自体をブロックする仕組みは無いため、この
+# ワークフローは「Actionsの実行結果が赤くなる/緑になる」という形での
+# 可視化・注意喚起であり、強制的な差し戻しではない。
+#   - タグをpushした直後、まだReleaseを作成していない段階でこのワーク
+#     フローが走ると、x/yの変更では一旦失敗する(これはリマインダーとして
+#     意図した動作)。
+#   - その後 Releases ページからこのタグを対象にReleaseを作成すると、
+#     release: published イベントで同じチェックが再実行され、成功する。
+
+on:
+  push:
+    tags:
+      - 'v*'
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          fetch-tags: true
+
+      - name: タグ名・バージョンを取得
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "release" ]; then
+            TAG="${{ github.event.release.tag_name }}"
+          else
+            TAG="${GITHUB_REF#refs/tags/}"
+          fi
+          VERSION="${TAG#v}"
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "対象タグ: $TAG (version: $VERSION)"
+
+      - name: pyproject.toml の version とタグが一致するか確認
+        run: |
+          PYPROJECT_VERSION=$(grep -m1 '^version = ' pyproject.toml | sed -E 's/^version = "(.*)"$/\1/')
+          if [ -z "$PYPROJECT_VERSION" ]; then
+            echo "::error::pyproject.toml から version を読み取れませんでした。"
+            exit 1
+          fi
+          if [ "$PYPROJECT_VERSION" != "${{ steps.tag.outputs.version }}" ]; then
+            echo "::error::pyproject.toml の version ($PYPROJECT_VERSION) とタグ (${{ steps.tag.outputs.version }}) が一致していません。pyproject.tomlを更新するかタグを付け直してください。"
+            exit 1
+          fi
+          echo "OK: pyproject.toml の version とタグが一致 ($PYPROJECT_VERSION)"
+
+      - name: CHANGELOG.md に該当バージョンの項目があるか確認
+        run: |
+          VERSION="${{ steps.tag.outputs.version }}"
+          if ! grep -qE "^## \[${VERSION}\]" CHANGELOG.md; then
+            echo "::error::CHANGELOG.md に '## [${VERSION}]' の項目が見つかりません。'## [Unreleased]' の内容をこのバージョンの項目にリネームして記録してください。"
+            exit 1
+          fi
+          echo "OK: CHANGELOG.md に '## [${VERSION}]' の項目あり"
+
+      - name: x/yの変更かどうか判定し、該当する場合はGitHub Releaseの存在を確認
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -e
+          CURRENT="${{ steps.tag.outputs.version }}"
+          TAG="${{ steps.tag.outputs.tag }}"
+
+          PREV_TAG=$(git tag --sort=-v:refname | grep -vFx "$TAG" | head -n1 || true)
+
+          IFS='.' read -r CX CY CZ <<< "$CURRENT"
+
+          NEEDS_RELEASE=false
+          if [ -z "$PREV_TAG" ]; then
+            NEEDS_RELEASE=true
+            echo "このリポジトリで最初のタグです -> GitHub Release の作成を必須とします。"
+          else
+            PREV="${PREV_TAG#v}"
+            IFS='.' read -r PX PY PZ <<< "$PREV"
+            if [ "$CX" != "$PX" ] || [ "$CY" != "$PY" ]; then
+              NEEDS_RELEASE=true
+              echo "直前のタグ $PREV_TAG から x または y が変わっています ($PREV -> $CURRENT) -> GitHub Release の作成を必須とします。"
+            else
+              echo "直前のタグ $PREV_TAG から z のみの変更では一旦失敗するは剘想、フローかぉる仃朇敗は変更する。"
+            fi
+          fi
+
+          if [ "$NEEDS_RELEASE" = "true" ]; then
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" \
+              -H "Authorization: token $GH_TOKEN" \
+              -H "Accept: application/vnd.github+json" \
+              "https://api.github.com/repos/${{ github.repository }}/releases/tags/${TAG}")
+            if [ "$STATUS" != "200" ]; then
+              echo "::error::このバージョン(${TAG})は破壊的変更(x/yの変更)、または初回タグのため、GitHub Releaseの作成が必要です。GitHubの Releases ページから、このタグを対象にReleaseを作成してください(タグをpushした直後にこのチェックが一度失敗するは想定通りです。Release作成後に再実行されると成功します)。"
+              exit 1
+            fi
+            echo "OK: GitHub Release (${TAG}) が存在します"
+          fi
