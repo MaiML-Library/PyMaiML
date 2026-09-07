@@ -92,6 +92,35 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   および「protocol側の値なしプレースホルダーと対応するdata側の実測値が
   同じxsi:typeになる」ことをend-to-endで検証するテストを含む。
 
+### Fixed
+- `pymaiml.serialization`: `<uncertainty>`要素が書き込み・読み込みの両方で
+  無視されていた不具合を修正。スキーマの`uncertaintyBaseType`は
+  `propertyBaseType`/`contentBaseType`共通の抽象基底型であり、
+  `maiml_domain`側の`uncertainties`パラメータは元々全てのproperty/content
+  クラスにモデル化されていた(`pymaiml`側の実装漏れであり、
+  `maiml_domain`の制限ではなかった)。`_write_property_or_content()`/
+  `_read_property_or_content()`に`tag=`引数を追加し、同じ具象クラスを
+  `<uncertainty>`タグとしても書き出し/読み込みできるようにした。
+- `pymaiml.serialization`: `_parse_scalar_text()`/`_format_value()`の
+  xsi:type判定が大文字小文字を区別する部分文字列一致
+  (例:`"Float" in xsi_type`)だったため、`pymaiml._xsi_registry`が
+  クラス名の先頭一文字だけを小文字化して生成するxsi:type名
+  (`FloatType` → `floatType`)に対しては判定が常に一致せず、bareな
+  scalar/list型(float/double/decimal/int/long/short/byte/boolean/
+  dateTime/uuid/hexBinary/base64Binary)の実測値が`loads()`後もPython型
+  へ変換されず文字列のまま返っていた不具合を修正。判定を
+  `xsi_type.lower()`同士の比較に変更し、大文字小文字の位置に依存しない
+  ようにした(`Content*`/`unsigned*`接頭辞を持つ型はクラス名中の位置が
+  ずれていたため偶然影響を受けていなかった)。
+- 上記2件の回帰防止テストを`tests/test_serialization.py`に追加
+  (`test_uncertainty_round_trips_through_dumps_and_loads`、
+  `test_bare_scalar_types_round_trip_with_correct_python_type`)。
+  ユーザー提供の実データファイル6件(ESEMstandard.1/.2、FSEMgold.2、
+  DAFMgoldcorrected.1/.2、CCORRELATION)を`pymaiml.builders`/
+  `pymaiml.serialization`のみで再構築するテストを通じて発見した
+  不具合(特に後者はCCORRELATION.maimlの`<uncertainty>`付き
+  measurement値で顕在化した)。
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

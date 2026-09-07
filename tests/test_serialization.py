@@ -179,3 +179,126 @@ def test_protocol_placeholder_and_measured_data_share_xsi_type_and_validate(tmp_
 
     result = validation.validate(out)
     assert result.ok, result.errors
+
+
+# ---------------------------------------------------------------------------
+# <uncertainty> and scalar xsi:type parsing -- regression coverage for two
+# bugs found while reconstructing real-world MaiML files with pymaiml:
+#   1. <uncertainty> was silently dropped on both write and read.
+#   2. _parse_scalar_text/_format_value matched xsi:type names with a
+#      case-sensitive substring check (e.g. "Float" in xsi_type) that can
+#      never match a bare type like "floatType", because
+#      pymaiml._xsi_registry lowercases only the class name's *first*
+#      letter -- so every bare scalar/list type (float, double, decimal,
+#      int, long, short, byte, boolean, dateTime, uuid, hexBinary,
+#      base64Binary) round-tripped as a raw string instead of its real
+#      Python type. Content-prefixed types (ContentFloatListType ->
+#      "contentFloatListType") and "unsigned*" types happened to still work
+#      by accident, which is why this had gone unnoticed.
+# ---------------------------------------------------------------------------
+
+def test_uncertainty_round_trips_through_dumps_and_loads():
+    import maiml_domain as m
+
+    prop = m.FloatType(
+        key="ex:scaleX", value=0.8840,
+        uncertainties=[m.FloatType(key="ex:StandardError", value=0.0021, format_string="0.0000")],
+    )
+    root = _minimal_root_with_result_property(prop)
+
+    xml_text = serialization.dumps(root, extra_namespaces={"lifecycle": LIFECYCLE_NS, "ex": "http://example.org/ex"})
+    assert "<uncertainty " in xml_text
+
+    loaded = serialization.loads(xml_text)
+    loaded_prop = _find_property(loaded.root, "ex:scaleX")
+    assert loaded_prop.value == 0.8840
+    assert len(loaded_prop.uncertainties) == 1
+    u = loaded_prop.uncertainties[0]
+    assert isinstance(u, m.FloatType)
+    assert u.key == "ex:StandardError"
+    assert u.value == 0.0021
+    assert u.format_string == "0.0000"
+
+
+@pytest.mark.parametrize(
+    "cls, value",
+    [
+        (__import__("maiml_domain").FloatType, 1.5),
+        (__import__("maiml_domain").DoubleType, 2.5),
+        (__import__("maiml_domain").DecimalType, __import__("decimal").Decimal("3.25")),
+        (__import__("maiml_domain").IntType, 7),
+        (__import__("maiml_domain").LongType, 123456789),
+        (__import__("maiml_domain").BooleanType, True),
+        (__import__("maiml_domain").UuidType, __import__("maiml_domain").Uuid("12345678-1234-3234-8234-123456789012")),
+    ],
+)
+def test_bare_scalar_types_round_trip_with_correct_python_type(cls, value):
+    """These are exactly the "keyword at position 0 of the class name"
+    types that the case-sensitive substring bug used to silently mis-parse
+    back as a plain string."""
+    import maiml_domain as m
+
+    prop = cls(key="ex:value", value=value)
+    root = _minimal_root_with_result_property(prop)
+
+    xml_text = serialization.dumps(root, extra_namespaces={"ex": "http://example.org/ex"})
+    loaded = serialization.loads(xml_text)
+    loaded_prop = _find_property(loaded.root, "ex:value")
+
+    assert type(loaded_prop.value) is type(value) or (
+        isinstance(value, m.Uuid) and isinstance(loaded_prop.value, m.Uuid)
+    )
+    assert loaded_prop.value == value
+
+
+def _minimal_root_with_result_property(prop):
+    """Build the smallest MaimlRootType whose single result carries `prop`
+    -- shared scaffolding for the two regression tests above."""
+    import maiml_domain as m
+
+    from pymaiml.builders import IdFactory, new_complete_event
+
+    ids = IdFactory()
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+                       content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    instr = m.InstructionType(id=ids.new_id("instr"),
+                               transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    rt = m.ResultTemplateType(id=ids.new_id("rt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], result_templates=[rt],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(id=ids.new_id("creator"),
+                             vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    document = m.DocumentType(id=ids.new_id("doc"), date=dt.datetime.now(dt.timezone.utc),
+                               creators=[creator], vendors=[vendor], owners=[owner],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    result = m.ResultType(id=ids.new_id("result"), ref=rt.id,
+                           content=m.GlobalObjectContent(uuid=ids.new_uuid(), properties=[prop]))
+    results = m.ResultsType(id=ids.new_id("results"), results=[result], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    data = m.DataType(id=ids.new_id("data"), results_list=[results], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    event = new_complete_event(ids.new_id("event"), instr.id, id_factory=ids)
+    trace = m.TraceType(id=ids.new_id("trace"), ref=program.id, events=[event], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    log = m.LogType(id=ids.new_id("log"), ref=method.id, traces=[trace], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+
+def _find_property(root_obj, key):
+    result = root_obj.data.results_list[0].results[0]
+    for prop in result.content.properties:
+        if prop.key == key:
+            return prop
+    raise AssertionError(f"property {key!r} not found")

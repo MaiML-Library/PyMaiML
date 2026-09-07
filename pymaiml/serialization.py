@@ -30,8 +30,13 @@ again, and the ids so pymaiml.builders.IdFactory.from_existing_ids() can
 avoid generating a new id that collides with one already in the file.
 
 Known limitations (documented rather than silently guessed at):
-  - <uncertainty> children of property/content are not modelled by
-    maiml_domain yet, so they are never written or read.
+  - <uncertainty> elements reuse the exact same concrete property/content
+    classes as top-level <property>/<content> -- the schema's
+    uncertaintyBaseType is the common abstract ancestor of both
+    propertyBaseType and contentBaseType (see maiml-property.xsd), so a
+    FloatType/ContentFloatListType/etc. instance can be written under
+    either tag. _write_property_or_content()/_read_property_or_content()
+    take an optional tag= override for exactly this purpose.
   - EncryptionType's ``encrypted_data`` is stored (by maiml_domain) as a
     raw <xenc:EncryptedData> XML string on both the way in and the way
     out; it is not decrypted, inspected, or re-encrypted.
@@ -73,7 +78,11 @@ __all__ = ["dumps", "dump", "loads", "load", "LoadedMaiml"]
 def _format_value(value, xsi_type: str) -> str:
     """Render a single Python value as MaiML XML text, per its xsi:type."""
     if isinstance(value, (bytes, bytearray)):
-        if "hexBinary" in xsi_type:
+        # Case-insensitive, whole-string match -- see _parse_scalar_text's
+        # docstring for why a literal "hexBinary" substring check silently
+        # misses ContentHexBinaryListType (its "Hex" keeps the capital H
+        # that only the very first letter of the *class name* loses).
+        if "hexbinary" in xsi_type.lower():
             return binascii.hexlify(bytes(value)).decode("ascii")
         return base64.b64encode(bytes(value)).decode("ascii")
     if isinstance(value, bool):
@@ -99,16 +108,24 @@ def _write_encryption(parent_el: ET.Element, enc: "m.EncryptionType") -> None:
     parent_el.append(frag)
 
 
-def _write_property_or_content(parent_el: ET.Element, obj) -> ET.Element:
+def _write_property_or_content(parent_el: ET.Element, obj, tag: Optional[str] = None) -> ET.Element:
     """
     A propertyBaseType/contentBaseType instance:
-      description? -> value? -> uncertainty*(unsupported) -> property* -> content*
+      description? -> value? -> uncertainty* -> property* -> content*
     OR (xs:choice) an encryptionGroup payload.
     contentBaseType additionally carries axis/size/id/ref attributes.
+
+    `tag` is normally left as None, in which case it is derived from the
+    object's own kind ("content" for a content class, "property"
+    otherwise). Pass tag="uncertainty" to instead write `obj` as an
+    <uncertainty> element -- valid for the same concrete classes, since
+    uncertaintyBaseType is the schema's common ancestor of propertyBaseType
+    and contentBaseType (see module docstring).
     """
     xsi_type = xsi_type_for(obj)
     is_content = is_content_class(type(obj))
-    tag = "content" if is_content else "property"
+    if tag is None:
+        tag = "content" if is_content else "property"
 
     attrs = {"key": obj.key}
     if is_content:
@@ -139,7 +156,8 @@ def _write_property_or_content(parent_el: ET.Element, obj) -> ET.Element:
         if obj.value is not None:
             ET.SubElement(el, "value").text = _format_value(obj.value, xsi_type)
 
-    # uncertainty*: not structurally modelled by maiml_domain -- skipped.
+    for u in obj.uncertainties:
+        _write_property_or_content(el, u, tag="uncertainty")
 
     for child_prop in obj.properties:
         _write_property_or_content(el, child_prop)
@@ -560,23 +578,38 @@ def _parse_scalar_text(text: str, xsi_type: str):
     """Convert one whitespace-delimited MaiML value token back to a Python
     value, dispatching on the xsi:type name the same way _format_value's
     caller chose how to render it. See is_list_shaped()/_format_value() for
-    the write-side counterpart of this table."""
-    if "Boolean" in xsi_type:
+    the write-side counterpart of this table.
+
+    The dispatch is deliberately case-insensitive on the *whole* xsi_type
+    string (lowercased once into `t`), not a naive substring check against
+    the token's original capitalization. pymaiml._xsi_registry derives an
+    xsi:type name from a maiml_domain class name by lowercasing only the
+    class name's FIRST character (e.g. "FloatType" -> "floatType"), so a
+    keyword that sits at position 0 of the class name loses its capital
+    letter in the resulting xsi:type -- meaning "Float" in "floatType" is
+    False! Only class names where the keyword appears later (e.g.
+    "UnsignedLongType" -> "unsignedLongType", "ContentHexBinaryListType" ->
+    "contentHexBinaryListType") kept their original-case substring by
+    accident. Comparing lowercased tokens against a lowercased xsi_type
+    avoids this trap uniformly.
+    """
+    t = xsi_type.lower()
+    if "boolean" in t:
         return text.strip() == "true"
-    if "DateTime" in xsi_type:
+    if "datetime" in t:
         return datetime.fromisoformat(text.strip())
-    if "Base64Binary" in xsi_type:
+    if "base64binary" in t:
         return base64.b64decode(text.strip())
-    if "HexBinary" in xsi_type:
+    if "hexbinary" in t:
         return binascii.unhexlify(text.strip())
-    if "Uuid" in xsi_type:
+    if "uuid" in t:
         return m.Uuid(text.strip())
-    if "Decimal" in xsi_type:
+    if "decimal" in t:
         from decimal import Decimal
         return Decimal(text.strip())
-    if "Double" in xsi_type or "Float" in xsi_type:
+    if "double" in t or "float" in t:
         return float(text.strip())
-    if any(token in xsi_type for token in ("Long", "Short", "Byte", "Int")):
+    if any(token in t for token in ("long", "short", "byte", "int")):
         return int(text.strip())
     return text  # String/Token/Id/IdRef/QualifiedName/Uri/Language/StringEnum
 
@@ -649,6 +682,7 @@ def _read_property_or_content(el):
     value_text = None
     nested_properties = []
     nested_contents = []
+    nested_uncertainties = []
     for child in children:
         name = _local(child.tag)
         if name == "description":
@@ -656,7 +690,7 @@ def _read_property_or_content(el):
         elif name == "value":
             value_text = child.text if child.text is not None else ""
         elif name == "uncertainty":
-            continue  # not modelled by maiml_domain -- see module docstring
+            nested_uncertainties.append(_read_property_or_content(child))
         elif name == "property":
             nested_properties.append(_read_property_or_content(child))
         elif name == "content":
@@ -668,6 +702,8 @@ def _read_property_or_content(el):
         kwargs["properties"] = nested_properties
     if nested_contents:
         kwargs["contents"] = nested_contents
+    if nested_uncertainties:
+        kwargs["uncertainties"] = nested_uncertainties
 
     if value_text is not None:
         if is_list_shaped(cls):
