@@ -196,3 +196,9 @@ GitHub Issue/PRでの議論を経てから行い、`CHANGELOG.md`に記載して
 組織全体の方針は
 [MaiML-Library/.github](https://github.com/MaiML-Library/.github/blob/main/profile/README.md)
 を参照してください。
+
+MaiML-Schema-1_0が更新された際に確認すべき手順(XSD反映箇所、
+`pymaiml._xsi_registry`/`pymaiml.builders`/`pymaiml.serialization`各層への
+影響範囲、round-tripテスト、supplementary business rulesの再確認など)は
+[CONTRIBUTING.md](CONTRIBUTING.md)にチェックリストとしてまとめています。
+XSD変更を伴う作業を行う場合は、必ず参照してください。
