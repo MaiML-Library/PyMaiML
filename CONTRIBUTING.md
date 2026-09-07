@@ -108,6 +108,32 @@ XSDを更新する際は、以下を順に確認してください。
     更新してください(手順1のXSD本体3箇所と同じ理由で、片方だけ直すと
     食い違います)。
 
+12. **`xsi:type`値は名前空間プレフィックスを解決しない、素の文字列比較で
+    判定されていることに注意する。** `xsi:type`はXML Schema上`xs:QName`型
+    であり、本来はプレフィックスが束縛する名前空間URIによって意味が決まる
+    ため、`xsi:type="maimlRootType"`(デフォルト名前空間`xmlns=
+    "http://www.maiml.org/schemas"`に依存)と`xsi:type="maiml:
+    maimlRootType"`(`xmlns:maiml="http://www.maiml.org/schemas"`という
+    明示的プレフィックス)はXMLの仕様上まったく同じ意味であり、実際に
+    lxmlの`XMLSchema.validate()`でもどちらも合格することを確認済み。
+    しかし`pymaiml.serialization`のルート型判定(`xsi_type ==
+    "maimlRootType"`という直接比較)と、`pymaiml._xsi_registry.
+    class_for_xsi_type()`(`property`/`content`の約70種のxsi:type
+    すべてが対象)は、どちらもQName解決を行わずに素の文字列一致で実装
+    されているため、`maiml:`のような明示的プレフィックス付きで書かれた
+    ファイルは`loads()`時に「Unknown xsi:type」として読み込みに失敗する
+    (実際に検証済み: `xsi:type="maiml:maimlRootType"`のファイルはXSD
+    構造検証には合格するが、`pymaiml.serialization.loads()`は
+    `ValueError`を送出する)。実サンプルファイル・pymaimlの書き出し処理
+    自体は一貫して「デフォルト名前空間+プレフィックスなし」を使っている
+    ため、pymaimlだけで完結する限り実害はないが、外部ツールが生成した
+    (プレフィックス付きの)ファイルを読み込む可能性がある場合は、
+    `_read_maiml_file`/`class_for_xsi_type()`側でQName解決
+    (`etree.QName(...).localname`相当の処理)を追加する改修を検討する
+    こと。XSD更新そのものとは独立した既知の制約だが、手順8(ルート型・
+    名前空間の確認)や手順3(xsi_registryの全型検証)を行う際に、
+    プレフィックス付き入力への対応要否も併せて検討するとよい。
+
 上記を一通り終えたら、`CHANGELOG.md`に変更内容を記載し(依存先
 `maiml-domain`のバージョンを上げること自体もSDKにとっての変更として
 扱います)、破壊的変更かどうかに応じて`CHANGELOG.md`冒頭のバージョニング
