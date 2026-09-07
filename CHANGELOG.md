@@ -66,13 +66,31 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `pymaiml.serialization.load()`で読み込んだ既存ファイルのid一覧を
   そのまま渡すことで、新規に採番するidが既存ファイルのidと衝突しないこと
   を保証できる。
+- `pymaiml.builders.infer_property()`/`infer_content()`に`xsi_type=`
+  (`maiml_domain`のクラス、またはxsi:type名の文字列)を追加。`protocol`
+  要素の汎用データコンテナ(材料テンプレート等)はほとんどの場合、値が
+  まだ無いプレースホルダーだが、xsi:typeはスキーマ上必須のため、値から
+  推定できないこのケースに対応できるようにした。`xsi_type=`・
+  `value=`/`values=`のいずれも与えなかった場合は(推定不能として)
+  ValueErrorを送出する。`PropertyListType`のように`value`/`values`
+  パラメータ自体を持たないクラスも、コンストラクタの実シグネチャを見て
+  正しく組み立てられる。
+- `pymaiml.builders.XsiTypeRegistry`を追加。`infer_property()`/
+  `infer_content()`に`registry=`として共有インスタンスを渡すことで、
+  `protocol`側のプレースホルダーと対応する`data`側の実測値記録とで、
+  同じ`key`が常に同じxsi:typeになることを保証する(実測値のPython型
+  から推定した場合と食い違う可能性がある場合でも、登録済みの型を優先
+  する)。同じkeyに異なるxsi:typeを再登録しようとした場合、または
+  property/contentの種類を跨いで同じkeyを使おうとした場合はエラーに
+  なる。
 - 依存関係に`lxml`を追加(`pymaiml.validation`と`pymaiml.serialization`の
   読み込み側が使用)。
 - 上記3モジュールに対するテスト(`tests/test_serialization.py`・
   `tests/test_validation.py`・`tests/test_builders.py`)を追加。生成した
   `.maiml`が実際にスキーマ検証を通ることに加え、「既存protocolファイルを
-  読み込んで新規data/eventLogを追加し、スキーマ検証まで通す」という
-  ユースケースそのものをend-to-endで検証するテストを含む。
+  読み込んで新規data/eventLogを追加し、スキーマ検証まで通す」ユースケース、
+  および「protocol側の値なしプレースホルダーと対応するdata側の実測値が
+  同じxsi:typeになる」ことをend-to-endで検証するテストを含む。
 
 ## [0.1.0] - 未リリース
 

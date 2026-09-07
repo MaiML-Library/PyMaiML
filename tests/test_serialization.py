@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime as dt
+
 import pytest
 
 from pymaiml import serialization
@@ -101,6 +103,79 @@ def test_load_then_extend_with_new_data_and_event_log(protocol_only_root, tmp_pa
 
     out = tmp_path / "extended.maiml"
     serialization.dump(full_root, out, extra_namespaces=loaded.namespaces)
+
+    result = validation.validate(out)
+    assert result.ok, result.errors
+
+
+def test_protocol_placeholder_and_measured_data_share_xsi_type_and_validate(tmp_path):
+    """A protocol's material template usually declares a property with no
+    value yet (xsi_type= given explicitly instead) -- and the matching
+    <data> recording of the same key, built later from an actual measured
+    Python value, must serialize with that same xsi:type. Here the measured
+    value is an int (20) for a key the protocol declared as floatType, so
+    this also exercises XsiTypeRegistry actually overriding what plain type
+    inference would have picked (IntType)."""
+    import maiml_domain as m
+
+    from pymaiml import validation
+    from pymaiml.builders import IdFactory, XsiTypeRegistry, infer_property, new_complete_event
+
+    ids = IdFactory()
+    registry = XsiTypeRegistry()
+
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+                       content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    instr = m.InstructionType(
+        id=ids.new_id("instr"),
+        transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    placeholder = infer_property("ex:temperature", xsi_type=m.FloatType, registry=registry, units="degC")
+    mt = m.MaterialTemplateType(
+        id=ids.new_id("mt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid(), properties=[placeholder]),
+    )
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], material_templates=[mt],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(id=ids.new_id("creator"),
+                             vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    document = m.DocumentType(id=ids.new_id("doc"), date=dt.datetime.now(dt.timezone.utc),
+                               creators=[creator], vendors=[vendor], owners=[owner],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    measured = infer_property("ex:temperature", value=20, registry=registry, units="degC")
+    assert type(measured) is m.FloatType  # not IntType, despite the Python int
+
+    material = m.MaterialType(id=ids.new_id("material"), ref=mt.id,
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid(), properties=[measured]))
+    results = m.ResultsType(id=ids.new_id("results"), materials=[material], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    data = m.DataType(id=ids.new_id("data"), results_list=[results], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    event = new_complete_event(ids.new_id("event"), instr.id, id_factory=ids)
+    trace = m.TraceType(id=ids.new_id("trace"), ref=program.id, events=[event], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    log = m.LogType(id=ids.new_id("log"), ref=method.id, traces=[trace], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    root = m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+    out = tmp_path / "sample.maiml"
+    serialization.dump(root, out, extra_namespaces={"lifecycle": LIFECYCLE_NS, "ex": "http://example.org/ex"})
+    xml_text = out.read_text(encoding="utf-8")
+
+    # both the protocol's placeholder and data's measured property for
+    # ex:temperature must serialize with the same xsi:type
+    assert xml_text.count('xsi:type="floatType"') >= 2
 
     result = validation.validate(out)
     assert result.ok, result.errors

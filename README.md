@@ -122,6 +122,40 @@ editable版がpip環境内で優先されます)。ただし、CI/リリース�
   property/contentクラスを推定)、`new_complete_event()`
   (`lifecycle:transition="complete"`イベントの組み立て)を提供します。
 
+  `infer_property()`/`infer_content()`は既定でPythonの値(`value=`/
+  `values=`)の型からxsi:typeを推定しますが、`protocol`要素の汎用データ
+  コンテナ(材料テンプレートの想定物性値など)はほとんどの場合、値が
+  まだ存在しないプレースホルダーです。xsi:typeはスキーマ上必須のため、
+  値がない場合は`xsi_type=`(`maiml_domain`のクラス、または
+  `"floatType"`のようなxsi:type名の文字列)で明示的に指定してください。
+  `xsi_type=`・`value=`/`values=`のどちらも与えなかった場合はエラーに
+  なります。
+
+  ```python
+  from pymaiml.builders import infer_property
+
+  # protocol側: 値はまだ無いプレースホルダー -- xsi:typeだけ明示
+  placeholder = infer_property("ex:temperature", xsi_type="floatType", units="degC")
+  ```
+
+  また、同じ`key`について`protocol`側のプレースホルダーと、対応する
+  `data`側の実測値記録が異なるxsi:typeになってしまうと(例えば実測値が
+  たまたま整数に見えるPythonの`int`だったために`intType`と推定されて
+  しまう場合など)不整合になります。`XsiTypeRegistry`のインスタンスを
+  `protocol`・`data`両方の`infer_property()`/`infer_content()`呼び出しに
+  `registry=`として共有して渡すことで、同じ`key`は常に同じxsi:typeで
+  組み立てられることを保証できます。
+
+  ```python
+  from pymaiml.builders import XsiTypeRegistry, infer_property
+
+  registry = XsiTypeRegistry()
+  placeholder = infer_property("ex:temperature", xsi_type="floatType", registry=registry)
+  # ... 後で実測値が手に入ったとき ...
+  measured = infer_property("ex:temperature", value=20, registry=registry)
+  assert type(measured) is type(placeholder)  # 20 (int) でもfloatTypeになる
+  ```
+
 ## テスト
 
 ```bash

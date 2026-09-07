@@ -2,15 +2,29 @@
 pymaiml.builders
 ==================
 
-Ergonomic helpers on top of the raw maiml_domain classes, aimed at the three
+Ergonomic helpers on top of the raw maiml_domain classes, aimed at the four
 sources of boilerplate/mistakes identified while hand-building MaiML files
 directly against maiml_domain during MaiML-Domain's own development:
 
   1. Picking the right one of ~70 property/content classes for a Python
-     value (IdFactory-adjacent: `infer_property` / `infer_content`).
-  2. Keeping id/uuid values unique across a large object tree
+     value (`infer_property` / `infer_content`).
+  2. A protocol element's generic data container is usually a *placeholder*
+     -- it declares what will eventually be measured, but (unlike the
+     corresponding <data> element built later) has no value/values of its
+     own yet. xsi:type is still required by the schema even then, so it
+     must be possible to say it explicitly instead of inferring it from a
+     value that doesn't exist (`infer_property`/`infer_content`'s
+     `xsi_type=` parameter).
+  3. Keeping that placeholder's xsi:type and the xsi:type of the matching
+     <data> property/content for the *same* key in sync -- a protocol
+     declaring `ex:temperature` as floatType must not end up with a
+     `<data>` recording of `ex:temperature` that serializes as intType just
+     because the measured Python value happened to be a whole number
+     (`XsiTypeRegistry`, shared across the `infer_property`/`infer_content`
+     calls for both the protocol and the data side).
+  4. Keeping id/uuid values unique across a large object tree
      (`IdFactory`).
-  3. Remembering that recording a material/condition/result in <data>
+  5. Remembering that recording a material/condition/result in <data>
      requires a matching lifecycle:transition="complete" <event> in
      <eventLog>, plus the exact XES namespace URI for the "lifecycle:"
      prefix -- this is EVT-02 in the maiml-schema-validator skill's rule
@@ -26,17 +40,21 @@ against real validation output.
 """
 from __future__ import annotations
 
+import inspect
 import itertools
 import uuid as _uuidlib
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Type
+from typing import Any, Dict, List, Optional, Type, Union
 
 import maiml_domain as m
+
+from ._xsi_registry import class_for_xsi_type, is_content_class, is_property_class
 
 __all__ = [
     "IdFactory",
     "LIFECYCLE_NS",
+    "XsiTypeRegistry",
     "infer_property",
     "infer_content",
     "new_complete_event",
@@ -117,6 +135,55 @@ class IdFactory:
 
 
 # ---------------------------------------------------------------------------
+# XsiTypeRegistry
+# ---------------------------------------------------------------------------
+
+class XsiTypeRegistry:
+    """
+    Remembers, per `key`, which concrete maiml_domain property/content class
+    was chosen the first time infer_property()/infer_content() saw that key
+    -- so a protocol's value-less placeholder (built with xsi_type= since
+    there is no value to infer from) and the actual measured property/
+    content recorded later in <data> for the *same* key are guaranteed to
+    share one xsi:type, even when the measured Python value wouldn't by
+    itself infer to that same class (e.g. a measured value of `20` (an
+    `int`) for a key the protocol declared as floatType).
+
+    Pass one shared XsiTypeRegistry instance to every infer_property()/
+    infer_content() call across a document's protocol and data sections.
+    This relies on MaiML's usual convention that a given `key` denotes one
+    semantic property throughout a document (per the Annex A/B thesaurus)
+    -- if a key genuinely needs a different type in a different place, give
+    it a distinct key instead; registering a second, different class for a
+    key already registered raises ValueError rather than silently
+    overwriting it.
+
+    >>> reg = XsiTypeRegistry()
+    >>> placeholder = infer_property("ex:temperature", xsi_type=m.FloatType, registry=reg)
+    >>> measured = infer_property("ex:temperature", value=20, registry=reg)
+    >>> type(measured) is m.FloatType
+    True
+    """
+
+    def __init__(self) -> None:
+        self._by_key: Dict[str, type] = {}
+
+    def get(self, key: str) -> Optional[type]:
+        return self._by_key.get(key)
+
+    def register(self, key: str, cls: type) -> None:
+        existing = self._by_key.get(key)
+        if existing is not None and existing is not cls:
+            raise ValueError(
+                f"XsiTypeRegistry: key {key!r} is already registered as "
+                f"{existing.__name__}; got {cls.__name__}. A given key must "
+                "resolve to one xsi:type throughout a document -- use a "
+                "different key if this is genuinely a different property."
+            )
+        self._by_key[key] = cls
+
+
+# ---------------------------------------------------------------------------
 # property / content type inference
 # ---------------------------------------------------------------------------
 
@@ -170,11 +237,63 @@ def _match(value_type: type, table) -> Optional[type]:
     return None
 
 
-def infer_property(key: str, value: Any = None, values: Optional[List[Any]] = None, **kwargs):
+def _resolve_xsi_type(xsi_type: Optional[Union[str, type]]) -> Optional[type]:
+    """xsi_type= accepts either the maiml_domain class itself (m.FloatType)
+    or the xsi:type name it corresponds to ("floatType"), resolved via
+    pymaiml._xsi_registry."""
+    if xsi_type is None:
+        return None
+    if isinstance(xsi_type, str):
+        return class_for_xsi_type(xsi_type)
+    return xsi_type
+
+
+def _instantiate(cls: type, key: str, value: Any, values: Optional[List[Any]], kwargs: dict):
     """
-    Build a maiml_domain property instance, choosing the concrete class
-    from the Python type of `value` (scalar) or the elements of `values`
-    (list -- must be non-empty and homogeneous).
+    Construct cls(key=key, ...), passing value= or values= only if cls's own
+    __init__ actually declares that parameter. This is what lets a
+    no-payload container class -- PropertyListType's __init__ hardcodes
+    values=[] and accepts neither `value` nor `values` itself -- be built
+    via xsi_type= exactly like every other property/content class, and
+    lets a value-less placeholder (xsi_type= given, value=/values= both
+    None) fall through to that parameter's own default instead of being
+    forced to an explicit None/[].
+    """
+    params = inspect.signature(cls.__init__).parameters
+    call_kwargs = dict(kwargs)
+    if "values" in params:
+        if values is not None:
+            call_kwargs["values"] = values
+    elif "value" in params:
+        call_kwargs["value"] = value
+    return cls(key=key, **call_kwargs)
+
+
+def infer_property(
+    key: str,
+    value: Any = None,
+    values: Optional[List[Any]] = None,
+    *,
+    xsi_type: Optional[Union[str, type]] = None,
+    registry: Optional[XsiTypeRegistry] = None,
+    **kwargs,
+):
+    """
+    Build a maiml_domain property instance.
+
+    Normally the concrete class is chosen from the Python type of `value`
+    (scalar) or the elements of `values` (list -- must be non-empty and
+    homogeneous). xsi:type is required by the schema regardless, so when
+    there is no value yet to infer it from -- the common case for a
+    protocol element's placeholder property -- pass it explicitly via
+    `xsi_type=` (either the maiml_domain class, e.g. `m.FloatType`, or the
+    xsi:type name, e.g. `"floatType"`). It is an error to have neither: a
+    value/values to infer from, nor an explicit xsi_type=.
+
+    Pass a shared `registry=` (an `XsiTypeRegistry`) across a document's
+    protocol and data sections to guarantee the placeholder declared in the
+    protocol and the actual measurement recorded later in <data> for the
+    same key end up with the same xsi:type -- see XsiTypeRegistry.
 
     Extra kwargs (description=, units=, format_string=, encryption=, ...)
     are forwarded to the chosen class's constructor -- pass whatever that
@@ -182,52 +301,119 @@ def infer_property(key: str, value: Any = None, values: Optional[List[Any]] = No
     non-numeric type) raises TypeError from the underlying constructor,
     same as calling it directly.
 
-    Exactly one of `value`/`values` must be given. For anything the
+    At most one of `value`/`values` may be given. For anything the
     inference table doesn't cover (xs:QName/IDREF/token/uri/language
-    scalars, enumerations, list-of-mixed-types), construct the
-    maiml_domain class directly -- this is a convenience for the common
-    cases, not a replacement for the full class list.
+    scalars, enumerations, list-of-mixed-types), pass xsi_type= explicitly
+    or construct the maiml_domain class directly.
     """
-    if (value is None) == (values is None):
-        raise ValueError("infer_property: pass exactly one of value= or values=")
+    if value is not None and values is not None:
+        raise ValueError("infer_property: pass at most one of value= or values=")
 
-    if values is not None:
-        if not values:
-            raise ValueError("infer_property: values must be non-empty to infer a type")
-        cls = _match(type(values[0]), _LIST_CLASS_BY_TYPE)
-        if cls is None:
+    cls = _resolve_xsi_type(xsi_type)
+    if cls is not None and not is_property_class(cls):
+        raise TypeError(f"infer_property: xsi_type={cls!r} is not a maiml_domain property class")
+
+    if cls is None and registry is not None:
+        cls = registry.get(key)
+        if cls is not None and not is_property_class(cls):
             raise TypeError(
-                f"infer_property: no known property list type for element type {type(values[0])!r}; "
-                "construct the maiml_domain class directly."
+                f"infer_property: registry has key={key!r} registered as "
+                f"{cls.__name__}, which is not a property class -- the same key is "
+                "being used for both a property and a content container"
             )
-        return cls(key=key, values=values, **kwargs)
 
-    cls = _match(type(value), _SCALAR_CLASS_BY_TYPE)
     if cls is None:
-        raise TypeError(
-            f"infer_property: no known scalar property type for {type(value)!r}; "
-            "construct the maiml_domain class directly."
-        )
-    return cls(key=key, value=value, **kwargs)
+        if values is not None:
+            if not values:
+                raise ValueError("infer_property: values must be non-empty to infer a type")
+            cls = _match(type(values[0]), _LIST_CLASS_BY_TYPE)
+            if cls is None:
+                raise TypeError(
+                    f"infer_property: no known property list type for element type {type(values[0])!r}; "
+                    "pass xsi_type= explicitly, or construct the maiml_domain class directly."
+                )
+        elif value is not None:
+            cls = _match(type(value), _SCALAR_CLASS_BY_TYPE)
+            if cls is None:
+                raise TypeError(
+                    f"infer_property: no known scalar property type for {type(value)!r}; "
+                    "pass xsi_type= explicitly, or construct the maiml_domain class directly."
+                )
+        else:
+            raise ValueError(
+                f"infer_property: xsi:type is required by the schema but could not be "
+                f"determined for key={key!r} -- no value=/values= to infer it from. Pass "
+                "xsi_type=<maiml_domain class or xsi:type name> explicitly; this is the "
+                "common case for a protocol placeholder property that has no value yet."
+            )
+
+    if registry is not None:
+        registry.register(key, cls)
+
+    return _instantiate(cls, key, value, values, kwargs)
 
 
-def infer_content(key: str, values: List[Any], **kwargs):
+def infer_content(
+    key: str,
+    values: Optional[List[Any]] = None,
+    *,
+    xsi_type: Optional[Union[str, type]] = None,
+    registry: Optional[XsiTypeRegistry] = None,
+    **kwargs,
+):
     """
     Build a maiml_domain content instance (always a list type -- MaiML has
-    no scalar content type) from the Python type of `values`' elements.
+    no scalar content type).
+
+    Normally the concrete class is chosen from the Python type of `values`'
+    elements (must be non-empty and homogeneous). xsi:type is required by
+    the schema regardless, so when there are no values yet -- the common
+    case for a protocol element's placeholder content, which may only
+    describe axis=/size= for now -- pass it explicitly via `xsi_type=`
+    (either the maiml_domain class, e.g. `m.ContentFloatListType`, or the
+    xsi:type name, e.g. `"contentFloatListType"`). It is an error to have
+    neither: non-empty values= to infer from, nor an explicit xsi_type=.
+
+    Pass a shared `registry=` (an `XsiTypeRegistry`) across a document's
+    protocol and data sections to guarantee the placeholder declared in the
+    protocol and the actual measurement recorded later in <data> for the
+    same key end up with the same xsi:type -- see XsiTypeRegistry.
 
     Extra kwargs (axis=, size=, units=, format_string=, id=, ref=, ...) are
     forwarded to the chosen class's constructor.
     """
-    if not values:
-        raise ValueError("infer_content: values must be non-empty to infer a type")
-    cls = _match(type(values[0]), _CONTENT_LIST_CLASS_BY_TYPE)
+    cls = _resolve_xsi_type(xsi_type)
+    if cls is not None and not is_content_class(cls):
+        raise TypeError(f"infer_content: xsi_type={cls!r} is not a maiml_domain content class")
+
+    if cls is None and registry is not None:
+        cls = registry.get(key)
+        if cls is not None and not is_content_class(cls):
+            raise TypeError(
+                f"infer_content: registry has key={key!r} registered as "
+                f"{cls.__name__}, which is not a content class -- the same key is "
+                "being used for both a property and a content container"
+            )
+
     if cls is None:
-        raise TypeError(
-            f"infer_content: no known content list type for element type {type(values[0])!r}; "
-            "construct the maiml_domain class directly."
-        )
-    return cls(key=key, values=values, **kwargs)
+        if not values:
+            raise ValueError(
+                f"infer_content: xsi:type is required by the schema but could not be "
+                f"determined for key={key!r} -- no non-empty values= to infer it from. Pass "
+                "xsi_type=<maiml_domain class or xsi:type name> explicitly; this is the "
+                "common case for a protocol placeholder content that has no values yet."
+            )
+        cls = _match(type(values[0]), _CONTENT_LIST_CLASS_BY_TYPE)
+        if cls is None:
+            raise TypeError(
+                f"infer_content: no known content list type for element type {type(values[0])!r}; "
+                "pass xsi_type= explicitly, or construct the maiml_domain class directly."
+            )
+
+    if registry is not None:
+        registry.register(key, cls)
+
+    return _instantiate(cls, key, None, values, kwargs)
 
 
 # ---------------------------------------------------------------------------
