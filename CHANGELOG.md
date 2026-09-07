@@ -44,7 +44,14 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   document/protocol(method・program階層のtemplateも含む)/data
   (material/condition/result)/eventLog(extension/global/classifier含む)
   /pnmlの全構造要素、およびproperty/content約70種類全てに一般化した。
-  `loads()`/`load()`(読み込み方向)は未実装(`NotImplementedError`)。
+- `pymaiml.serialization`: 読み込み方向`loads()`/`load()`を実装。
+  `LoadedMaiml`(`root`/`namespaces`/`ids`)を返す。「既存のprotocolのみの
+  MaiMLファイルを読み込み、`document`/`protocol`をそのまま引き継いで
+  新たな`data`/`eventLog`を組み立てる」というユースケースに対応するため、
+  `namespaces`(ルート要素が宣言していた名前空間の再現用)と
+  `ids`(`IdFactory.from_existing_ids()`と組み合わせた新規id採番時の
+  衝突回避用)をあわせて提供する。`dumps()`の出力を`loads()`で読み戻し、
+  再度`dumps()`した結果が元の出力とバイト単位で一致することを確認済み。
 - `pymaiml.validation`: 公式MaiML-Schema-1_0(`pymaiml/schema/`に同梱)
   によるXSD検証と、MaiML AI Common Specificationの補足ルール
   (EVT-02のlifecycle complete判定、ref参照先の型チェック、XES名前空間
@@ -55,10 +62,17 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `infer_property()`/`infer_content()`(Pythonの値の型からproperty/content
   クラスを推定)、`new_complete_event()`(EVT-02対応の
   `lifecycle:transition="complete"`イベント組み立て)を追加。
-- 依存関係に`lxml`を追加(`pymaiml.validation`が使用)。
+- `pymaiml.builders.IdFactory`: `reserve()`/`from_existing_ids()`を追加。
+  `pymaiml.serialization.load()`で読み込んだ既存ファイルのid一覧を
+  そのまま渡すことで、新規に採番するidが既存ファイルのidと衝突しないこと
+  を保証できる。
+- 依存関係に`lxml`を追加(`pymaiml.validation`と`pymaiml.serialization`の
+  読み込み側が使用)。
 - 上記3モジュールに対するテスト(`tests/test_serialization.py`・
   `tests/test_validation.py`・`tests/test_builders.py`)を追加。生成した
-  `.maiml`が実際にスキーマ検証を通ることまで確認している。
+  `.maiml`が実際にスキーマ検証を通ることに加え、「既存protocolファイルを
+  読み込んで新規data/eventLogを追加し、スキーマ検証まで通す」という
+  ユースケースそのものをend-to-endで検証するテストを含む。
 
 ## [0.1.0] - 未リリース
 

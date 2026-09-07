@@ -20,39 +20,50 @@ maiml-data.xsd / maiml-eventLog.xsd / maiml-pnml.xsd / maiml-core.xsd /
 maiml-property.xsd) -- see the docstring of each _write_* function for the
 specific xs:sequence it mirrors.
 
+loads()/load() are the inverse: parse MaiML XML (via lxml, so attribute
+namespace maps are easy to inspect) back into a maiml_domain object tree,
+returned wrapped in a LoadedMaiml along with the root's own custom
+namespace declarations and every id encountered in the file -- both are
+needed by the "load an existing protocol, keep it, add new data/eventLog"
+workflow: the namespaces so dumps() can be given the same extra_namespaces=
+again, and the ids so pymaiml.builders.IdFactory.from_existing_ids() can
+avoid generating a new id that collides with one already in the file.
+
 Known limitations (documented rather than silently guessed at):
   - <uncertainty> children of property/content are not modelled by
-    maiml_domain yet, so they are never written.
+    maiml_domain yet, so they are never written or read.
   - EncryptionType's ``encrypted_data`` is stored (by maiml_domain) as a
-    raw <xenc:EncryptedData> XML string; it is inserted into the tree
-    as-is (must be well-formed and self-contained re: its own xmlns).
-  - Reading MaiML XML back into maiml_domain objects (``loads``/``load``)
-    is not implemented yet -- see the NotImplementedError raised below for
-    the reasoning. Round-tripping an existing file currently requires a
-    separate parse step outside pymaiml.
+    raw <xenc:EncryptedData> XML string on both the way in and the way
+    out; it is not decrypted, inspected, or re-encrypted.
   - Custom key prefixes (e.g. "KYL:Cantilever", "ISO18115-3:Wavenumber")
-    must have their namespace declared via ``extra_namespaces`` -- MaiML's
-    key attributes are xs:QName, which XSD validation rejects if the
-    prefix has no xmlns declaration in scope.
+    must have their namespace declared via ``extra_namespaces`` when
+    writing -- MaiML's key attributes are xs:QName, which XSD validation
+    rejects if the prefix has no xmlns declaration in scope. loads()
+    reports whatever was declared on the root element via
+    LoadedMaiml.namespaces so a load-modify-dump round trip can reuse it
+    without the caller having to re-track it by hand.
 """
 from __future__ import annotations
 
 import base64
 import binascii
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Dict, Optional, Union
+from typing import Dict, List, Optional, Union
 from xml.dom import minidom
 from xml.etree import ElementTree as ET
 
+from lxml import etree as _lxml_etree
+
 import maiml_domain as m
 
-from ._xsi_registry import is_content_class, xsi_type_for
+from ._xsi_registry import class_for_xsi_type, is_content_class, is_list_shaped, xsi_type_for
 
 MAIML_NS = "http://www.maiml.org/schemas"
 XSI_NS = "http://www.w3.org/2001/XMLSchema-instance"
 
-__all__ = ["dumps", "dump", "loads", "load"]
+__all__ = ["dumps", "dump", "loads", "load", "LoadedMaiml"]
 
 
 # ---------------------------------------------------------------------------
@@ -517,25 +528,511 @@ def dump(
     path.write_text(dumps(root_obj, **kwargs), encoding="utf-8")
 
 
-def loads(xml_text: str):
-    """
-    Parse MaiML XML text back into a maiml_domain object tree.
+def _local(tag) -> Optional[str]:
+    if not isinstance(tag, str):
+        return None
+    return tag.split("}", 1)[-1] if "}" in tag else tag
 
-    Not implemented yet: reconstructing the object graph correctly requires
-    resolving id/IDREF relationships (e.g. deciding which MaterialType a
-    <material ref="..."> instance points back to) and reversing the xsi:type
-    dispatch for every property/content leaf, in a way that hasn't been
-    exercised against real MaiML files yet. Raising loudly here rather than
-    shipping an unverified implementation that looks like it works.
-    """
-    raise NotImplementedError(
-        "pymaiml.serialization.loads() is not implemented yet -- writing "
-        "MaiML XML (dumps/dump) is supported; reading it back into "
-        "maiml_domain objects is planned but not built. See the module "
-        "docstring."
+
+def _find(el, name):
+    """First direct child of `el` with local-name == name, or None."""
+    for c in el:
+        if _local(c.tag) == name:
+            return c
+    return None
+
+
+def _find_all(el, name):
+    """All direct children of `el` with local-name == name."""
+    return [c for c in el if _local(c.tag) == name]
+
+
+def _text_of(el, name) -> Optional[str]:
+    child = _find(el, name)
+    return child.text if child is not None else None
+
+
+# ---------------------------------------------------------------------------
+# reading: scalar value parsing (inverse of _format_value)
+# ---------------------------------------------------------------------------
+
+def _parse_scalar_text(text: str, xsi_type: str):
+    """Convert one whitespace-delimited MaiML value token back to a Python
+    value, dispatching on the xsi:type name the same way _format_value's
+    caller chose how to render it. See is_list_shaped()/_format_value() for
+    the write-side counterpart of this table."""
+    if "Boolean" in xsi_type:
+        return text.strip() == "true"
+    if "DateTime" in xsi_type:
+        return datetime.fromisoformat(text.strip())
+    if "Base64Binary" in xsi_type:
+        return base64.b64decode(text.strip())
+    if "HexBinary" in xsi_type:
+        return binascii.unhexlify(text.strip())
+    if "Uuid" in xsi_type:
+        return m.Uuid(text.strip())
+    if "Decimal" in xsi_type:
+        from decimal import Decimal
+        return Decimal(text.strip())
+    if "Double" in xsi_type or "Float" in xsi_type:
+        return float(text.strip())
+    if any(token in xsi_type for token in ("Long", "Short", "Byte", "Int")):
+        return int(text.strip())
+    return text  # String/Token/Id/IdRef/QualifiedName/Uri/Language/StringEnum
+
+
+# ---------------------------------------------------------------------------
+# reading: property / content  (inverse of _write_property_or_content)
+# ---------------------------------------------------------------------------
+
+_ENCRYPTION_CHILD_NAMES = {"childUri", "childHash", "childUuid", "EncryptedData"}
+
+
+def _read_encryption(el) -> "m.EncryptionType":
+    child_uris: list = []
+    child_hashes: list = []
+    child_uuids: list = []
+    encrypted_data_xml: Optional[str] = None
+    for child in el:
+        name = _local(child.tag)
+        if name == "childUri":
+            child_uris.append(child.text)
+        elif name == "childHash":
+            child_hashes.append(base64.b64decode((child.text or "").strip()))
+        elif name == "childUuid":
+            child_uuids.append(m.Uuid((child.text or "").strip()))
+        elif name == "EncryptedData":
+            encrypted_data_xml = _lxml_etree.tostring(child, encoding="unicode")
+    return m.EncryptionType(
+        encrypted_data=encrypted_data_xml,
+        child_uris=child_uris, child_hashes=child_hashes, child_uuids=child_uuids,
     )
 
 
-def load(path: Union[str, Path]):
-    """Read `path` and parse it via loads(). See loads() for current status."""
-    return loads(Path(path).read_text(encoding="utf-8"))
+def _read_property_or_content(el):
+    """
+    Inverse of _write_property_or_content: reconstruct one property/content
+    instance from its <property>/<content> element, recursing into any
+    nested property*/content*.
+    """
+    xsi_type = el.get(f"{{{XSI_NS}}}type")
+    cls = class_for_xsi_type(xsi_type)
+    key = el.get("key")
+
+    kwargs: Dict = {}
+    if is_content_class(cls):
+        if el.get("axis") is not None:
+            kwargs["axis"] = el.get("axis")
+        if el.get("size") is not None:
+            kwargs["size"] = int(el.get("size"))
+        if el.get("id") is not None:
+            kwargs["id"] = el.get("id")
+        if el.get("ref") is not None:
+            kwargs["ref"] = el.get("ref")
+    if el.get("formatString") is not None:
+        kwargs["format_string"] = el.get("formatString")
+    if el.get("units") is not None:
+        kwargs["units"] = el.get("units")
+    if el.get("scaleFactor") is not None:
+        raw = el.get("scaleFactor")
+        try:
+            kwargs["scale_factor"] = int(raw)
+        except ValueError:
+            kwargs["scale_factor"] = float(raw)
+
+    children = list(el)
+    if any(_local(c.tag) in _ENCRYPTION_CHILD_NAMES for c in children):
+        kwargs["encryption"] = _read_encryption(el)
+        return cls(key=key, **kwargs)
+
+    description = None
+    value_text = None
+    nested_properties = []
+    nested_contents = []
+    for child in children:
+        name = _local(child.tag)
+        if name == "description":
+            description = child.text
+        elif name == "value":
+            value_text = child.text if child.text is not None else ""
+        elif name == "uncertainty":
+            continue  # not modelled by maiml_domain -- see module docstring
+        elif name == "property":
+            nested_properties.append(_read_property_or_content(child))
+        elif name == "content":
+            nested_contents.append(_read_property_or_content(child))
+
+    if description is not None:
+        kwargs["description"] = description
+    if nested_properties:
+        kwargs["properties"] = nested_properties
+    if nested_contents:
+        kwargs["contents"] = nested_contents
+
+    if value_text is not None:
+        if is_list_shaped(cls):
+            kwargs["values"] = [_parse_scalar_text(tok, xsi_type) for tok in value_text.split()]
+        else:
+            kwargs["value"] = _parse_scalar_text(value_text, xsi_type)
+
+    return cls(key=key, **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# reading: globalObjectContentGroup, insertion, hash, chain/parent
+# ---------------------------------------------------------------------------
+
+def _read_insertion(el) -> "m.InsertionType":
+    hash_el = _find(el, "hash")
+    uuid_el = _find(el, "uuid")
+    format_el = _find(el, "format")
+    return m.InsertionType(
+        uri=_text_of(el, "uri"),
+        hash=m.HashType(value=base64.b64decode((hash_el.text or "").strip()), method=hash_el.get("method")),
+        uuid=m.Uuid(uuid_el.text.strip()) if uuid_el is not None else None,
+        format=format_el.text if format_el is not None else None,
+    )
+
+
+def _read_global_content(el) -> "m.GlobalObjectContent":
+    """
+    Inverse of _write_global_content. Scans el's direct children for the
+    globalObjectContentGroup shape (uuid, then either an encryption payload
+    or insertion*/name/description/annotation/property*/content*) --
+    ignores any other direct children el may have (e.g. <document>'s
+    <creator>/<vendor>/.../<date>), which the caller reads separately.
+    """
+    children = list(el)
+    if any(_local(c.tag) in _ENCRYPTION_CHILD_NAMES for c in children):
+        uuid_el = _find(el, "uuid")
+        uuid_val = m.Uuid(uuid_el.text.strip()) if uuid_el is not None else None
+        return m.GlobalObjectContent(uuid=uuid_val, encryption=_read_encryption(el))
+
+    uuid_el = _find(el, "uuid")
+    uuid_val = m.Uuid(uuid_el.text.strip()) if uuid_el is not None else None
+    insertions = [_read_insertion(c) for c in _find_all(el, "insertion")]
+    name_val = _text_of(el, "name")
+    description = _text_of(el, "description")
+    annotation = _text_of(el, "annotation")
+    properties = [_read_property_or_content(c) for c in _find_all(el, "property")]
+    contents = [_read_property_or_content(c) for c in _find_all(el, "content")]
+    return m.GlobalObjectContent(
+        uuid=uuid_val, insertions=insertions, name=name_val,
+        description=description, annotation=annotation,
+        properties=properties, contents=contents,
+    )
+
+
+def _read_hash(el) -> "m.HashType":
+    hash_el = _find(el, "hash")
+    return m.HashType(value=base64.b64decode((hash_el.text or "").strip()), method=hash_el.get("method"))
+
+
+def _read_chain_or_parent(el, tag: str):
+    cls = m.ChainType if tag == "chain" else m.ParentType
+    nested = [_read_chain_or_parent(c, tag) for c in _find_all(el, tag)]
+    kwargs = {"chains": nested} if tag == "chain" else {"parents": nested}
+    uuid_el = _find(el, "uuid")
+    return cls(uuid=m.Uuid(uuid_el.text.strip()), hash=_read_hash(el), key=el.get("key"), **kwargs)
+
+
+# ---------------------------------------------------------------------------
+# reading: refTypes / simpleObjectType / arc
+# ---------------------------------------------------------------------------
+
+_REF_CLASS_BY_TAG = {
+    "vendorRef": m.VendorRefType,
+    "instrumentRef": m.InstrumentRefType,
+    "placeRef": m.PlaceRefType,
+    "transitionRef": m.TransitionRefType,
+    "templateRef": m.TemplateRefType,
+    "instanceRef": m.InstanceRefType,
+    "creatorRef": m.CreatorRefType,
+    "ownerRef": m.OwnerRefType,
+    "resultsRef": m.ResultsRefType,
+}
+
+
+def _read_ref(el, tag: str):
+    cls = _REF_CLASS_BY_TAG[tag]
+    kwargs: Dict = {"id": el.get("id"), "ref": el.get("ref")}
+    name_val = _text_of(el, "name")
+    if name_val is not None:
+        kwargs["name"] = name_val
+    description = _text_of(el, "description")
+    if description is not None:
+        kwargs["description"] = description
+    if tag == "placeRef" and el.get("initialMarking") is not None:
+        kwargs["initial_marking"] = el.get("initialMarking") == "true"
+    return cls(**kwargs)
+
+
+def _read_simple_object(el, cls):
+    return cls(id=el.get("id"), name=_text_of(el, "name"), description=_text_of(el, "description"))
+
+
+def _read_arc(el) -> "m.ArcType":
+    return m.ArcType(
+        id=el.get("id"), source=el.get("source"), target=el.get("target"),
+        name=_text_of(el, "name"), description=_text_of(el, "description"),
+    )
+
+
+# ---------------------------------------------------------------------------
+# reading: document
+# ---------------------------------------------------------------------------
+
+def _read_document(el) -> "m.DocumentType":
+    signature_el = _find(el, "Signature")
+    signature = _lxml_etree.tostring(signature_el, encoding="unicode") if signature_el is not None else None
+
+    creators = []
+    for c_el in _find_all(el, "creator"):
+        creators.append(m.CreatorType(
+            id=c_el.get("id"),
+            vendor_refs=[_read_ref(vr, "vendorRef") for vr in _find_all(c_el, "vendorRef")],
+            instrument_refs=[_read_ref(ir, "instrumentRef") for ir in _find_all(c_el, "instrumentRef")],
+            content=_read_global_content(c_el),
+        ))
+    vendors = [m.VendorType(id=v.get("id"), content=_read_global_content(v)) for v in _find_all(el, "vendor")]
+    owners = [m.OwnerType(id=o.get("id"), content=_read_global_content(o)) for o in _find_all(el, "owner")]
+    instruments = [m.InstrumentType(id=i.get("id"), content=_read_global_content(i)) for i in _find_all(el, "instrument")]
+    date_el = _find(el, "date")
+    chains = [_read_chain_or_parent(c, "chain") for c in _find_all(el, "chain")]
+    parents = [_read_chain_or_parent(p, "parent") for p in _find_all(el, "parent")]
+
+    return m.DocumentType(
+        id=el.get("id"),
+        date=datetime.fromisoformat(date_el.text.strip()),
+        creators=creators, vendors=vendors, owners=owners,
+        content=_read_global_content(el),
+        instruments=instruments, chains=chains, parents=parents,
+        signature=signature,
+    )
+
+
+# ---------------------------------------------------------------------------
+# reading: protocol / pnml
+# ---------------------------------------------------------------------------
+
+def _read_pnml(el) -> "m.PnmlType":
+    return m.PnmlType(
+        id=el.get("id"),
+        places=[_read_simple_object(p, m.PlaceType) for p in _find_all(el, "place")],
+        transitions=[_read_simple_object(t, m.TransitionType) for t in _find_all(el, "transition")],
+        arcs=[_read_arc(a) for a in _find_all(el, "arc")],
+        content=_read_global_content(el),
+    )
+
+
+def _read_instruction(el) -> "m.InstructionType":
+    return m.InstructionType(
+        id=el.get("id"),
+        transition_refs=[_read_ref(tr, "transitionRef") for tr in _find_all(el, "transitionRef")],
+        content=_read_global_content(el),
+    )
+
+
+def _read_template(el, cls):
+    return cls(
+        id=el.get("id"),
+        place_refs=[_read_ref(pr, "placeRef") for pr in _find_all(el, "placeRef")],
+        content=_read_global_content(el),
+        template_refs=[_read_ref(tr, "templateRef") for tr in _find_all(el, "templateRef")],
+    )
+
+
+def _read_templates(el) -> Dict:
+    return dict(
+        material_templates=[_read_template(t, m.MaterialTemplateType) for t in _find_all(el, "materialTemplate")],
+        condition_templates=[_read_template(t, m.ConditionTemplateType) for t in _find_all(el, "conditionTemplate")],
+        result_templates=[_read_template(t, m.ResultTemplateType) for t in _find_all(el, "resultTemplate")],
+    )
+
+
+def _read_program(el) -> "m.ProgramType":
+    return m.ProgramType(
+        id=el.get("id"),
+        instructions=[_read_instruction(i) for i in _find_all(el, "instruction")],
+        content=_read_global_content(el),
+        **_read_templates(el),
+    )
+
+
+def _read_method(el) -> "m.MethodType":
+    return m.MethodType(
+        id=el.get("id"),
+        pnmls=[_read_pnml(p) for p in _find_all(el, "pnml")],
+        programs=[_read_program(p) for p in _find_all(el, "program")],
+        content=_read_global_content(el),
+        **_read_templates(el),
+    )
+
+
+def _read_protocol(el) -> "m.ProtocolType":
+    return m.ProtocolType(
+        id=el.get("id"),
+        methods=[_read_method(me) for me in _find_all(el, "method")],
+        content=_read_global_content(el),
+        **_read_templates(el),
+    )
+
+
+# ---------------------------------------------------------------------------
+# reading: data
+# ---------------------------------------------------------------------------
+
+def _read_instance(el, cls):
+    return cls(
+        id=el.get("id"), ref=el.get("ref"),
+        content=_read_global_content(el),
+        instance_refs=[_read_ref(ir, "instanceRef") for ir in _find_all(el, "instanceRef")],
+    )
+
+
+def _read_results(el) -> "m.ResultsType":
+    return m.ResultsType(
+        id=el.get("id"),
+        content=_read_global_content(el),
+        materials=[_read_instance(x, m.MaterialType) for x in _find_all(el, "material")],
+        conditions=[_read_instance(x, m.ConditionType) for x in _find_all(el, "condition")],
+        results=[_read_instance(x, m.ResultType) for x in _find_all(el, "result")],
+    )
+
+
+def _read_data(el) -> "m.DataType":
+    return m.DataType(
+        id=el.get("id"),
+        results_list=[_read_results(r) for r in _find_all(el, "results")],
+        content=_read_global_content(el),
+    )
+
+
+# ---------------------------------------------------------------------------
+# reading: eventLog
+# ---------------------------------------------------------------------------
+
+def _read_event(el) -> "m.EventType":
+    return m.EventType(
+        id=el.get("id"), ref=el.get("ref"),
+        content=_read_global_content(el),
+        results_refs=[_read_ref(x, "resultsRef") for x in _find_all(el, "resultsRef")],
+        creator_refs=[_read_ref(x, "creatorRef") for x in _find_all(el, "creatorRef")],
+        owner_refs=[_read_ref(x, "ownerRef") for x in _find_all(el, "ownerRef")],
+    )
+
+
+def _read_trace(el) -> "m.TraceType":
+    return m.TraceType(
+        id=el.get("id"), ref=el.get("ref"),
+        events=[_read_event(e) for e in _find_all(el, "event")],
+        content=_read_global_content(el),
+        creator_refs=[_read_ref(x, "creatorRef") for x in _find_all(el, "creatorRef")],
+        owner_refs=[_read_ref(x, "ownerRef") for x in _find_all(el, "ownerRef")],
+    )
+
+
+def _read_log(el) -> "m.LogType":
+    globals_ = []
+    for g_el in _find_all(el, "global"):
+        globals_.append(m.GlobalsType(
+            scope=g_el.get("scope"),
+            properties=[_read_property_or_content(p) for p in _find_all(g_el, "property")],
+        ))
+    return m.LogType(
+        id=el.get("id"), ref=el.get("ref"),
+        traces=[_read_trace(t) for t in _find_all(el, "trace")],
+        content=_read_global_content(el),
+        extensions=[
+            m.ExtensionType(name=x.get("name"), prefix=x.get("prefix"), uri=x.get("uri"))
+            for x in _find_all(el, "extension")
+        ],
+        globals=globals_,
+        classifiers=[
+            m.ClassifierType(name=x.get("name"), scope=x.get("scope"), keys=x.get("keys"))
+            for x in _find_all(el, "classifier")
+        ],
+        creator_refs=[_read_ref(x, "creatorRef") for x in _find_all(el, "creatorRef")],
+        owner_refs=[_read_ref(x, "ownerRef") for x in _find_all(el, "ownerRef")],
+    )
+
+
+def _read_event_log(el) -> "m.EventLogType":
+    return m.EventLogType(
+        id=el.get("id"),
+        logs=[_read_log(lg) for lg in _find_all(el, "log")],
+        content=_read_global_content(el),
+    )
+
+
+# ---------------------------------------------------------------------------
+# root: loads() / load()
+# ---------------------------------------------------------------------------
+
+@dataclass
+class LoadedMaiml:
+    """
+    Result of loads()/load(): the parsed object tree plus the two things a
+    "load an existing file, keep its protocol, add new data/eventLog"
+    workflow needs and can't get from the maiml_domain objects alone.
+
+    root: a MaimlRootType or ProtocolFileRootType, matching the file's own
+        xsi:type. For a ProtocolFileRootType, build a new MaimlRootType
+        re-using `root.document` and `root.protocol` as-is, plus your own
+        new DataType/EventLogType, then dumps() that.
+    namespaces: every xmlns:<prefix> declared on the root <maiml> element,
+        other than the fixed default (MAIML_NS) and xsi: bindings -- e.g.
+        {"KYL": "...", "lifecycle": "http://www.xes-standard.org/..."}.
+        Pass this straight back as dumps(..., extra_namespaces=namespaces)
+        so a load-modify-dump round trip doesn't have to re-track which
+        custom prefixes the original file declared.
+    ids: every id= value found anywhere in the file, in document order.
+        Feed this to pymaiml.builders.IdFactory.from_existing_ids(ids) so
+        newly generated ids for the data you add cannot collide with ids
+        already used by the loaded content.
+    """
+    root: Union["m.MaimlRootType", "m.ProtocolFileRootType"]
+    namespaces: Dict[str, str] = field(default_factory=dict)
+    ids: List[str] = field(default_factory=list)
+
+
+def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
+    """Parse MaiML XML text (or bytes) into a LoadedMaiml."""
+    data = xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text
+    root_el = _lxml_etree.fromstring(data)
+
+    xsi_type = root_el.get(f"{{{XSI_NS}}}type")
+    namespaces = {
+        prefix: uri
+        for prefix, uri in root_el.nsmap.items()
+        if prefix is not None and prefix != "xsi"
+    }
+    all_ids = [el.get("id") for el in root_el.iter() if el.get("id") is not None]
+
+    document_el = _find(root_el, "document")
+    document = _read_document(document_el)
+    protocol_el = _find(root_el, "protocol")
+    protocol = _read_protocol(protocol_el) if protocol_el is not None else None
+    features = root_el.get("features")
+
+    if xsi_type == "maimlRootType":
+        data_el = _find(root_el, "data")
+        event_log_el = _find(root_el, "eventLog")
+        root_obj = m.MaimlRootType(
+            document=document, protocol=protocol,
+            data=_read_data(data_el), event_log=_read_event_log(event_log_el),
+            features=features,
+        )
+    elif xsi_type == "protocolFileRootType":
+        root_obj = m.ProtocolFileRootType(document=document, protocol=protocol, features=features)
+    else:
+        raise ValueError(
+            f"Unknown maiml/@xsi:type: {xsi_type!r} (expected 'maimlRootType' or 'protocolFileRootType')"
+        )
+
+    return LoadedMaiml(root=root_obj, namespaces=namespaces, ids=all_ids)
+
+
+def load(path: Union[str, Path]) -> LoadedMaiml:
+    """Read `path` and parse it via loads()."""
+    return loads(Path(path).read_bytes())

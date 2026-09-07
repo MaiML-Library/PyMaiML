@@ -70,6 +70,16 @@ class IdFactory:
     'material2'
     >>> isinstance(ids.new_uuid(), m.Uuid)
     True
+
+    When adding new elements to a file that already has other elements in
+    it (e.g. loading an existing protocol via
+    pymaiml.serialization.load() and building new data/eventLog on top of
+    it), reserve the loaded ids first so this factory's own numbering can
+    never collide with them, even if a prefix happens to coincide:
+
+    >>> ids = IdFactory.from_existing_ids(["material_template1", "place1"])
+    >>> ids.new_id("material_template")  # skips 1 -- already reserved
+    'material_template2'
     """
 
     def __init__(self) -> None:
@@ -86,6 +96,24 @@ class IdFactory:
 
     def new_uuid(self) -> "m.Uuid":
         return m.Uuid(str(_uuidlib.uuid4()))
+
+    def reserve(self, ids) -> None:
+        """
+        Mark ids already used elsewhere (typically every id in a file
+        loaded via pymaiml.serialization.load/loads -- see LoadedMaiml.ids)
+        so new_id() will never return one of them. Safe to call more than
+        once, and safe to call with ids this factory has already issued
+        itself.
+        """
+        self._issued.update(ids)
+
+    @classmethod
+    def from_existing_ids(cls, ids) -> "IdFactory":
+        """Convenience constructor: build a fresh IdFactory with `ids`
+        pre-reserved. Equivalent to IdFactory() followed by .reserve(ids)."""
+        factory = cls()
+        factory.reserve(ids)
+        return factory
 
 
 # ---------------------------------------------------------------------------

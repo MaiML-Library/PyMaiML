@@ -65,12 +65,47 @@ editable版がpip環境内で優先されます)。ただし、CI/リリース�
 ## モジュール構成
 
 - `pymaiml.serialization` -- `maiml_domain`のオブジェクトツリーと実際の
-  `.maiml` XMLとの相互変換。`dumps()`/`dump()`(書き出し)を実装済みです。
-  `loads()`/`load()`(読み込み)は未実装です(呼び出すと`NotImplementedError`
-  になります。理由はモジュールのdocstringを参照)。
+  `.maiml` XMLとの相互変換。書き出し(`dumps()`/`dump()`)・読み込み
+  (`loads()`/`load()`)の両方向を実装済みです。
   `maiml_domain`の各property/content型はモジュール内のレジストリ
   (`_xsi_registry.py`)から自動生成されるxsi:type名で判定されるため、
   70種類ある型のうちどれを使っても個別対応は不要です。
+
+  `loads()`/`load()`は`LoadedMaiml`(`root`/`namespaces`/`ids`の3属性を
+  持つ)を返します。「既存のMaiMLファイル(protocolのみのテンプレート
+  ファイルなど)を読み込み、`protocol`/`document`をそのまま引き継いで、
+  新たな値で`data`/`eventLog`を組み立てて書き出す」というユースケースを
+  想定しており、その際に必要な以下2点を`LoadedMaiml`が直接サポートします。
+
+  - `namespaces` -- 読み込んだファイルのルート要素が宣言していた名前空間
+    (`lifecycle:`など、`xsi`を除く)。書き出し時に
+    `dumps(root, extra_namespaces=loaded.namespaces)`とそのまま渡せば、
+    元のファイルの名前空間宣言を再現できます。
+  - `ids` -- 読み込んだファイル内の全`id`値。新規要素の採番に使う
+    `IdFactory`をこの値で初期化する(`IdFactory.from_existing_ids(loaded.ids)`)
+    ことで、読み込んだファイルのidと衝突しない新しいidを安全に採番でき
+    ます(`pymaiml.builders`の節を参照)。
+
+  ```python
+  from pymaiml import serialization
+  from pymaiml.builders import IdFactory, new_complete_event
+  import maiml_domain as m
+
+  loaded = serialization.load("template_protocol.maiml")
+  ids = IdFactory.from_existing_ids(loaded.ids)
+
+  mt = loaded.root.protocol.material_templates[0]
+  material = m.MaterialType(id=ids.new_id("material"), ref=mt.id,
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+  # ... results/data/event/trace/log/eventLog も同様に組み立てる ...
+
+  full_root = m.MaimlRootType(
+      document=loaded.root.document, protocol=loaded.root.protocol,
+      data=data, event_log=event_log,
+  )
+  serialization.dump(full_root, "measured.maiml", extra_namespaces=loaded.namespaces)
+  ```
+
 - `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
   同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
   Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、
@@ -81,10 +116,11 @@ editable版がpip環境内で優先されます)。ただし、CI/リリース�
   assert result.ok, result  # result.errors / .warnings / .info も参照可
   ```
 - `pymaiml.builders` -- オブジェクトツリーを手で組み立てる際の定型作業を
-  減らすヘルパー群。`IdFactory`(id/uuidの重複しない採番)、
-  `infer_property()`/`infer_content()`(Pythonの値の型からproperty/content
-  クラスを推定)、`new_complete_event()`(`lifecycle:transition="complete"`
-  イベントの組み立て)を提供します。
+  減らすヘルパー群。`IdFactory`(id/uuidの重複しない採番。
+  `reserve()`/`from_existing_ids()`で既存ファイル読み込み後のid衝突を
+  回避できる)、`infer_property()`/`infer_content()`(Pythonの値の型から
+  property/contentクラスを推定)、`new_complete_event()`
+  (`lifecycle:transition="complete"`イベントの組み立て)を提供します。
 
 ## テスト
 
@@ -96,7 +132,8 @@ pytest
 `tests/test_smoke.py`は`maiml_domain`への依存解決を確認する最小限の
 スモークテストです。`tests/test_serialization.py`・
 `tests/test_validation.py`・`tests/test_builders.py`が上記3モジュールの
-実際の動作(スキーマ検証を通ることを含む)を検証します。
+実際の動作(スキーマ検証を通ることや、既存protocolを読み込んで
+data/eventLogを追加するユースケースの実際の流れを含む)を検証します。
 
 ## ライセンス
 

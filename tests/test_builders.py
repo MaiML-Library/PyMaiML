@@ -59,6 +59,21 @@ def test_infer_content_dispatch():
     assert content.units == "cm-1"
 
 
+def test_id_factory_reserve_prevents_collisions_with_loaded_ids():
+    ids = IdFactory()
+    ids.reserve(["material1", "material2"])
+    assert ids.new_id("material") == "material3"
+
+
+def test_id_factory_from_existing_ids_is_equivalent_to_reserve():
+    ids = IdFactory.from_existing_ids(["material1", "place7"])
+    assert ids.new_id("material") == "material2"
+    assert ids.new_id("place") == "place1"  # unaffected prefix still starts at 1
+    # reserving again (e.g. loading a second file) must not un-reserve or crash
+    ids.reserve(["material2"])  # already issued by this same factory -- safe
+    assert ids.new_id("material") == "material3"
+
+
 def test_new_complete_event_sets_lifecycle_property():
     ids = IdFactory()
     event = new_complete_event("event1", "instr1", id_factory=ids)

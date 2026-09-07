@@ -64,3 +64,48 @@ def minimal_root(id_factory: IdFactory) -> m.MaimlRootType:
     event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
 
     return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+
+@pytest.fixture
+def protocol_only_root() -> m.ProtocolFileRootType:
+    """A protocolFileRootType: document + protocol, no data/eventLog -- the
+    shape produced when a method/protocol is authored and shared on its own,
+    to be loaded later and extended with actual measurement data (see
+    test_serialization.py's load-then-extend test, which models exactly this
+    workflow end to end)."""
+    ids = IdFactory()
+
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(
+        id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    instr = m.InstructionType(
+        id=ids.new_id("instr"),
+        transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    mt = m.MaterialTemplateType(
+        id=ids.new_id("mt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], material_templates=[mt], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(
+        id=ids.new_id("creator"),
+        vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    document = m.DocumentType(
+        id=ids.new_id("doc"),
+        date=dt.datetime.now(dt.timezone.utc),
+        creators=[creator], vendors=[vendor], owners=[owner],
+        content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+    )
+    return m.ProtocolFileRootType(document=document, protocol=protocol)

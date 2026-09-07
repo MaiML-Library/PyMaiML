@@ -56,6 +56,22 @@ def is_content_class(cls: type) -> bool:
     return isinstance(cls, type) and issubclass(cls, ContentBaseType)
 
 
+def is_list_shaped(cls: type) -> bool:
+    """
+    True if `cls` carries a `values` list (property *ListType/*EnumType,
+    or any content type -- MaiML has no scalar content type, and every
+    content class name ends in "ListType" or "EnumType" too). False means
+    `cls` carries a single scalar `value` instead.
+
+    This is a naming-convention check, not an attribute probe, so it works
+    without having to construct an instance first -- exactly what the
+    serialization reader needs before it knows whether to parse a <value>
+    element's text as one token or split it on whitespace.
+    """
+    name = cls.__name__
+    return name.endswith("ListType") or name.endswith("EnumType")
+
+
 def xsi_type_for(obj_or_cls) -> str:
     """Return the xsi:type name for a property/content instance or class."""
     cls = obj_or_cls if isinstance(obj_or_cls, type) else type(obj_or_cls)
