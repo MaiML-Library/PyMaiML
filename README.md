@@ -156,6 +156,22 @@ editable版がpip環境内で優先されます)。ただし、CI/リリース�
   assert type(measured) is type(placeholder)  # 20 (int) でもfloatTypeになる
   ```
 
+  > **注意: 同じ親要素内で同じkeyを複数回使う場合について。**
+  > MaiML-Schema-1_0は`key`の一意性を(同じ親要素内であっても)一切
+  > 強制していません(`genericDataContainerGroup`は`property*, content*`
+  > というだけで、スキーマ全体を通して`key`に対する`xs:unique`/`xs:key`
+  > 制約はありません)。そのため、たとえば同じ`<material>`の中に
+  > `key="ex:temperature"`のpropertyを複数回(2回目の測定値、など)
+  > 記録することはスキーマ上有効です。
+  >
+  > `XsiTypeRegistry`はこの場合でも、全ての出現が同じxsi:typeに解決さ
+  > れる限り問題なく動作します(2回目以降の呼び出しは、既に登録済みの
+  > 型をそのまま再利用するだけです)。ただし、同じkeyに対して**意図的に
+  > 異なる**xsi:typeを与えたい場合(通常は想定しない使い方です)は、
+  > その呼び出しでは`registry=`を渡さずに`infer_property()`/
+  > `infer_content()`を呼んでください(shared-typeチェックの対象から
+  > 外れます)。
+
 ## テスト
 
 ```bash

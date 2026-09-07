@@ -163,6 +163,20 @@ class XsiTypeRegistry:
     >>> measured = infer_property("ex:temperature", value=20, registry=reg)
     >>> type(measured) is m.FloatType
     True
+
+    Note -- repeated keys under one parent: MaiML-Schema-1_0 places no
+    uniqueness constraint on `key` at all (genericDataContainerGroup is
+    just ``property*, content*`` -- no xs:unique/xs:key anywhere in the
+    schema), so the *same* key appearing more than once directly under the
+    *same* parent (e.g. two temperature readings both keyed "ex:temperature"
+    in one <material>'s properties) is schema-valid and passes validation.
+    XsiTypeRegistry is fine with that as long as every occurrence resolves
+    to the same xsi:type (which is the normal case, and all repeats after
+    the first will simply reuse what's already registered). If you
+    deliberately want a *different* xsi:type for a repeated key -- an
+    unusual case -- pass `registry=` only on the calls where you want the
+    shared-type check, and omit it (call infer_property()/infer_content()
+    without registry=) for the one(s) that should be exempt from it.
     """
 
     def __init__(self) -> None:
