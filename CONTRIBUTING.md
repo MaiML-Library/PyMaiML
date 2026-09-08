@@ -138,3 +138,47 @@ XSDを更新する際は、以下を順に確認してください。
 `maiml-domain`のバージョンを上げること自体もSDKにとっての変更として
 扱います)、破壊的変更かどうかに応じて`CHANGELOG.md`冒頭のバージョニング
 ポリシーに従ってバージョンを上げてください。
+
+## PyPI公開前の対応
+
+現在`pyproject.toml`の`dependencies`は、開発段階として
+
+```
+"maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.2.0"
+```
+
+というdirect reference(git+URLでタグ固定)依存にしています。これは
+`main`ブランチ追従(再現性なし)よりはるかに安全なので、開発中はこのまま
+で問題ありません。
+
+ただし本パッケージをPyPI等のpublic indexへ公開する場合は、この形式の
+ままではアップロードできません。PyPAの仕様(PEP 508の"Direct
+References"節、およびPyPIのdirect reference依存に関する方針)では、
+public index serverはアップロードされたdistributionの依存関係に
+direct referenceを含めることを許可すべきではないとされており、実際
+PyPIへのアップロードもこの形式のままでは拒否されます(distributionが
+外部の任意コードを取り込めてしまい、index server側の検証をバイパス
+できてしまうため)。
+
+公開する際は、次の順序で対応してください。
+
+1. **`MaiML-Domain`を先にPyPIへ公開する。** `pymaiml`が依存する具体的な
+   バージョン範囲を確定させるため、必ずこちらを先に公開します。
+2. **`pyproject.toml`の`dependencies`を通常のバージョン指定へ書き換える。**
+   ```toml
+   dependencies = [
+       "maiml-domain>=0.2,<0.3",
+       "lxml>=4.9",
+   ]
+   ```
+   のように、公開されたバージョンに対する範囲指定へ置き換えます
+   (`pyproject.toml`内に、この置き換え後の形をコメントで併記して
+   あります)。バージョン範囲の上限は、`MaiML-Domain`側の
+   `CHANGELOG.md`冒頭のバージョニングポリシー(破壊的変更でマイナー
+   `y`を上げる方針)に合わせて、常に現在追従しているマイナーバージョン
+   までに絞ってください。
+3. **`pymaiml`自体をPyPIへ公開する。** 1・2を終えてから公開します。
+
+なお、この制約は`pymaiml`自身がPyPIへ公開する側になった場合の話であり、
+`MaiML-Domain`を先にGitHubのタグ経由で追従する現在の開発フローそのものを
+変える必要はありません。

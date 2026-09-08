@@ -273,6 +273,17 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   1件(units/formatString/scaleFactor)と、設計上の割り切りとして
   ドキュメント化に留めるのが妥当と判断した3件(署名の再整形、
   loads()の対象範囲、同梱XSDの差分)への対応。
+- `pyproject.toml`の`dependencies`(`maiml-domain @ git+...@v0.2.0`という
+  direct reference)の上に、PyPI公開時にはこの形式のまま使えない旨と、
+  公開後に書き換えるべき形(`maiml-domain>=0.2,<0.3`)をコメントで併記。
+  PyPAの仕様上、public index serverはアップロードされたdistributionの
+  依存関係にdirect referenceを含めることを許可すべきではないとされて
+  おり、実際PyPIへのアップロードもこの形式のままでは拒否される。
+  開発段階の現在はタグ固定のgit依存(`main`追従より安全)のままで問題
+  ないため、`dependencies`自体は変更していない。`CONTRIBUTING.md`に
+  「PyPI公開前の対応」節を新設し、(1) MaiML-Domainを先にPyPI公開、
+  (2) `dependencies`をバージョン範囲指定へ書き換え、(3) `pymaiml`自体を
+  PyPI公開、という順序を明文化した。外部レビューで報告された所見。
 
 ## [0.1.0] - 未リリース
 

@@ -19,6 +19,22 @@ classifiers = [
     "Programming Language :: Python :: 3 :: Only",
     "Topic :: Scientific/Engineering",
 ]
+# NOTE: PyPIへ公開する場合、この direct reference(git+URL)依存はそのままでは
+# 使えません。PyPAの仕様上、public index server はアップロードされた
+# distributionの依存関係に direct reference を含めることを許可すべきでは
+# ないとされており(PEP 508 "Direct References"节、PyPAのdirect
+# reference依存に関する方針を参照)、実際PyPIへのアップロードもこの形式の
+# ままでは拒否されます。開発段階(タグ固定によるgit依存)では`main`追従より
+# ずっと安全なので現状のままにしていますが、公開時は以下の手順を踏んで
+# ください(詳しくはCONTRIBUTING.mdの「PyPI公開前の対応」を参照)。
+#   1. MaiML-DomainをPyPIに先に公開する。
+#   2. 下記dependenciesを次の形に書き換える(コメントアウトを外して
+#      有効化し、上のgit+URL行を削除する):
+#        dependencies = [
+#            "maiml-domain>=0.2,<0.3",
+#            "lxml>=4.9",
+#        ]
+#   3. その後にPyMaiML自体をPyPIへ公開する。
 dependencies = [
     "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.2.0",
     "lxml>=4.9",
