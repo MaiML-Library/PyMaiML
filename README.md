@@ -9,14 +9,26 @@ Pythonから扱うためのSDKです。
 ある [MaiML-Domain](https://github.com/MaiML-Library/MaiML-Domain)
 (`maiml_domain`パッケージ)の上に構築されています。
 
-- `maiml_domain`: XSDに対応するデータクラス群のみ。業務ルール検証や
-  XMLシリアライズは持たない、依存ライブラリゼロの基盤パッケージ。
+- `maiml_domain`: XSDに対応するデータクラス群を提供する、依存ライブラリ
+  ゼロの基盤パッケージ。ただし「純粋なデータモデル」とはいえ完全に無検証
+  ではなく、**XSD単体(1つのcomplexType定義)を見るだけで機械的に判断できる
+  制約**(`minOccurs`/`maxOccurs`、`xs:choice`の排他性、required属性、
+  `simpleType`の字句上の制約など)はコンストラクタが検証し、違反時には
+  `ValueError`/`TypeError`を送出します。XMLシリアライズは持ちません。
 - `pymaiml`(このリポジトリ): `maiml_domain`をpipの通常の依存パッケージ
   として取り込み、その上に以下を実装する層。
   - `.maiml`ファイルとの相互変換(シリアライズ/デシリアライズ)
-  - MaiML AI Common Specificationの業務ルール検証
-    (`lifecycle:transition="complete"`の必須化、`ref`参照先の型チェック等)
+  - **複数要素・複数セクションをまたいで初めて判断できる検証**
+    (`id`/`ref`の整合性、`ref`参照先の型チェック、
+    `lifecycle:transition="complete"`の必須化など、MaiML AI Common
+    Specificationの業務ルール検証)
   - オブジェクトツリーを組み立てやすくする高レベルAPI
+
+つまり境界線は「1つのcomplexType定義だけを見て判定できるか、複数要素を
+またいで初めて判定できるか」で引いています。前者は`maiml_domain`のコンス
+トラクタが即座に拒否すべき制約、後者は`pymaiml.validation.validate()`が
+受け持つ制約です。新しい検証ロジックをどちらに実装すべきか迷ったら、まず
+この基準に照らして判断してください。
 
 `maiml_domain`自体をこのSDKやCLIツールと同じリポジトリに置かず、あえて
 別リポジトリに分離しているのは、複数言語のSDKやAPI/ツール層(将来追加され
