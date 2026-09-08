@@ -328,6 +328,14 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   引き続き成功することを確認するテスト、`_load_schema()`が引き続き
   ローカルXSD間の`xs:import`/`xs:include`を解決できることを確認する
   テストを含む。ユーザー提案。
+- `pymaiml._xsi_registry`: モジュールレベルの`XSI_TYPE_TO_CLASS`/
+  `CLASS_TO_XSI_TYPE`初期化が、`_build_registries()`(`maiml_domain.
+  property.__all__`のリフレクション)を2回呼び出していた(それぞれ
+  `.update(_build_registries()[0])`/`[1]`という書き方だったため)重複を
+  解消。`XSI_TYPE_TO_CLASS, CLASS_TO_XSI_TYPE = _build_registries()`と
+  1回の呼び出しで両方を受け取る形に変更。結果は元々同じ辞書の内容に
+  なるため動作上のバグではなく、インポート時に無駄なリフレクション処理を
+  もう一度実行していた分のコードの明快さの改善。ユーザー指摘。
 
 ## [0.1.0] - 未リリース
 

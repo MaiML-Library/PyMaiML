@@ -42,10 +42,9 @@ def _build_registries():
     return xsi_to_cls, cls_to_xsi
 
 
-XSI_TYPE_TO_CLASS: Dict[str, type] = {}
-CLASS_TO_XSI_TYPE: Dict[type, str] = {}
-XSI_TYPE_TO_CLASS.update(_build_registries()[0])
-CLASS_TO_XSI_TYPE.update(_build_registries()[1])
+XSI_TYPE_TO_CLASS: Dict[str, type]
+CLASS_TO_XSI_TYPE: Dict[type, str]
+XSI_TYPE_TO_CLASS, CLASS_TO_XSI_TYPE = _build_registries()
 
 
 def is_property_class(cls: type) -> bool:
