@@ -120,6 +120,10 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `test_drop_stale_signature_requires_a_snapshot_from_loads`)。
 
 ### Fixed
+- `pymaiml/__init__.py`: モジュールdocstringに`loads/load is not
+  implemented yet`という古い記述が残っており(両関数とも実装済み)、
+  `help(pymaiml)`で最初に読まれる箇所で実装状況を誤解させていた不具合を
+  修正(外部レビュー所見08)。
 - `pymaiml.serialization`: `<uncertainty>`要素が書き込み・読み込みの両方で
   無視されていた不具合を修正。スキーマの`uncertaintyBaseType`は
   `propertyBaseType`/`contentBaseType`共通の抽象基底型であり、

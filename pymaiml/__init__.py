@@ -11,8 +11,8 @@ XML (de)serialization -- see its own README for the rationale. Those
 concerns live here, in the SDK layer, split across three modules:
 
   pymaiml.serialization
-      Convert maiml_domain object trees to/from real MaiML XML
-      (dumps/dump; loads/load is not implemented yet -- see that module).
+      Convert maiml_domain object trees to/from real MaiML XML: dumps/dump
+      to write, loads/load to read -- see that module.
 
   pymaiml.validation
       Validate a .maiml/.maiml.zip/.mai file against the official
