@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import re
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -482,6 +483,64 @@ def _write_event_log(parent_el: ET.Element, elog: "m.EventLogType") -> ET.Elemen
 # root  (maiml.xsd)
 # ---------------------------------------------------------------------------
 
+_ROOT_OPEN_TAG_RE = re.compile(r"^(<maiml)((?:\s+[^\s=]+=\"[^\"]*\")*)\s*(/?>)")
+
+
+def _dedupe_root_namespace_decls(xml_text: str) -> str:
+    """Collapse duplicate xmlns/xmlns:<prefix> declarations on the root
+    <maiml> element.
+
+    dumps() can end up declaring the same prefix twice on <maiml>: once
+    because MAIML_NS/XSI_NS/extra_namespaces are set as literal attributes
+    up front, and once more because xml.etree.ElementTree's own namespace
+    machinery auto-declares a prefix (ns0, ns1, ...) for whatever real
+    {uri}-qualified content got appended verbatim from a loaded
+    <Signature>/<EncryptedData> block (_write_document/
+    _write_property_or_content parse those with ET.fromstring() and
+    append them as-is; unlike the rest of this module they carry genuine
+    namespace-qualified tags, which ElementTree's serializer discovers by
+    scanning the whole tree and declares at the root -- it has no way to
+    know a literal same-named attribute is already there). The result is
+    a root element with the same attribute name twice, which is a
+    well-formedness error (ExpatError: duplicate attribute) once fed
+    through minidom, and invalid XML even with pretty=False.
+
+    A load-modify-dump round trip of pymaiml's own output always
+    produces the *same* URI for a colliding prefix (ElementTree assigns
+    ns0/ns1/... deterministically from tree order), so dropping the
+    duplicate and keeping the first occurrence is safe for that case. A
+    genuine conflict (same prefix, two different URIs) is a caller error
+    -- e.g. passing an extra_namespaces mapping that reuses a prefix
+    ElementTree also needs for an embedded signature -- and is raised
+    explicitly instead of silently picking one and corrupting the file.
+    """
+    match = _ROOT_OPEN_TAG_RE.match(xml_text)
+    if not match:
+        return xml_text
+    open_tag, attrs_blob, closer = match.group(1), match.group(2), match.group(3)
+    pairs = re.findall(r'([^\s=]+)="([^"]*)"', attrs_blob)
+    seen: Dict[str, str] = {}
+    ordered_names: List[str] = []
+    for name, value in pairs:
+        if name in seen:
+            if seen[name] != value:
+                raise ValueError(
+                    f"dumps(): conflicting declarations for {name!r} on the root "
+                    f"<maiml> element ({seen[name]!r} vs {value!r}). This can "
+                    "happen when extra_namespaces reuses a prefix that "
+                    "xml.etree.ElementTree also auto-assigns to a namespace used "
+                    "inside an embedded <Signature>/<EncryptedData> block -- pass "
+                    "a non-conflicting extra_namespaces mapping (e.g. drop the "
+                    "auto-assigned prefix from loaded.namespaces before "
+                    "re-dumping)."
+                )
+            continue
+        seen[name] = value
+        ordered_names.append(name)
+    rebuilt_attrs = "".join(f' {name}="{seen[name]}"' for name in ordered_names)
+    return xml_text[: match.start()] + open_tag + rebuilt_attrs + closer + xml_text[match.end():]
+
+
 def dumps(
     root_obj: Union["m.MaimlRootType", "m.ProtocolFileRootType"],
     *,
@@ -526,6 +585,7 @@ def dumps(
         _write_event_log(maiml_el, root_obj.event_log)
 
     rough = ET.tostring(maiml_el, encoding="unicode")
+    rough = _dedupe_root_namespace_decls(rough)
     if not pretty:
         return '<?xml version="1.0" encoding="UTF-8"?>\n' + rough
 
@@ -566,8 +626,19 @@ def _find_all(el, name):
 
 
 def _text_of(el, name) -> Optional[str]:
+    """Text of the first `name` child, or None if that child is absent.
+
+    Distinguishes "the element is missing" (None) from "the element is
+    present but empty" (""), which is a valid, distinct value for any
+    XSD xs:string field with minOccurs="0" (e.g. <description/>). Both
+    lxml and ElementTree report .text as None for an empty element, so
+    callers must not use `child.text` directly for that distinction --
+    doing so silently drops the element on the next dumps() call.
+    """
     child = _find(el, name)
-    return child.text if child is not None else None
+    if child is None:
+        return None
+    return child.text or ""
 
 
 # ---------------------------------------------------------------------------
@@ -686,7 +757,7 @@ def _read_property_or_content(el):
     for child in children:
         name = _local(child.tag)
         if name == "description":
-            description = child.text
+            description = child.text or ""
         elif name == "value":
             value_text = child.text if child.text is not None else ""
         elif name == "uncertainty":
@@ -726,7 +797,7 @@ def _read_insertion(el) -> "m.InsertionType":
         uri=_text_of(el, "uri"),
         hash=m.HashType(value=base64.b64decode((hash_el.text or "").strip()), method=hash_el.get("method")),
         uuid=m.Uuid(uuid_el.text.strip()) if uuid_el is not None else None,
-        format=format_el.text if format_el is not None else None,
+        format=(format_el.text or "") if format_el is not None else None,
     )
 
 

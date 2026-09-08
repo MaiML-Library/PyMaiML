@@ -302,3 +302,219 @@ def _find_property(root_obj, key):
         if prop.key == key:
             return prop
     raise AssertionError(f"property {key!r} not found")
+
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for the external review (PyMaiML review findings 01-03,
+# 2026-09-07): signature round-trip crash, empty-string/absent confusion
+# for <description>/<format>, and a conflicting-declaration safety net.
+# ---------------------------------------------------------------------------
+
+def _minimal_root_with_signature(signature_xml):
+    """Build the smallest MaimlRootType whose document carries `signature`
+    -- mirrors conftest.py's minimal_root fixture, but with a <Signature>
+    attached, which that fixture deliberately omits."""
+    import maiml_domain as m
+
+    from pymaiml.builders import IdFactory, new_complete_event
+
+    ids = IdFactory()
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(id=ids.new_id("creator"),
+                             vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    document = m.DocumentType(id=ids.new_id("doc"), date=dt.datetime.now(dt.timezone.utc),
+                               creators=[creator], vendors=[vendor], owners=[owner],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()),
+                               signature=signature_xml)
+
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+                       content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    instr = m.InstructionType(id=ids.new_id("instr"),
+                               transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    mt = m.MaterialTemplateType(id=ids.new_id("mt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+                                 content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], material_templates=[mt],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    material = m.MaterialType(id=ids.new_id("material"), ref=mt.id, content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    results = m.ResultsType(id=ids.new_id("results"), materials=[material], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    data = m.DataType(id=ids.new_id("data"), results_list=[results], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    event = new_complete_event(ids.new_id("event"), instr.id, id_factory=ids)
+    trace = m.TraceType(id=ids.new_id("trace"), ref=program.id, events=[event], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    log = m.LogType(id=ids.new_id("log"), ref=method.id, traces=[trace], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+
+def test_signature_round_trips_without_duplicate_namespace_error():
+    """A <Signature> read back via loads() is re-serialized by lxml with
+    every namespace declaration in scope baked into the fragment text
+    (including ones inherited from the root, unrelated to the signature
+    itself). Re-appending that text on the next dumps() call makes
+    xml.etree.ElementTree auto-declare its own ns0/ns1/... prefix for the
+    namespace(s) actually used inside it -- and before the fix, that could
+    collide with the very same prefix loads() had reported back via
+    LoadedMaiml.namespaces (the documented load-modify-dump workflow),
+    producing two xmlns:ns0="..." attributes on the root <maiml> element
+    and: xml.parsers.expat.ExpatError: duplicate attribute."""
+    root = _minimal_root_with_signature(
+        '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
+        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
+    )
+
+    xml1 = serialization.dumps(root)
+    loaded = serialization.loads(xml1)
+    assert loaded.namespaces  # the xmldsig namespace was captured, as documented
+
+    # This is exactly the documented load-modify-dump workflow
+    # (LoadedMaiml.namespaces docstring: "Pass this straight back as
+    # dumps(..., extra_namespaces=namespaces)") -- it must not raise.
+    xml2 = serialization.dumps(loaded.root, extra_namespaces=loaded.namespaces)
+
+    # ...and the result must itself be stable under a second round trip.
+    loaded2 = serialization.loads(xml2)
+    xml3 = serialization.dumps(loaded2.root, extra_namespaces=loaded2.namespaces)
+    assert xml2 == xml3
+
+
+def test_dumps_rejects_genuinely_conflicting_root_namespace_declaration():
+    """The fix above must not silently pick a winner when two *different*
+    namespace URIs end up declared under the same prefix on the root
+    element -- that would silently point some tags/keys at the wrong
+    namespace instead of failing loudly."""
+    from pymaiml.serialization import _dedupe_root_namespace_decls
+
+    xml_text = (
+        '<maiml xmlns:ns0="http://example.org/a" xmlns:ns0="http://example.org/b">'
+        "<x/></maiml>"
+    )
+    with pytest.raises(ValueError, match="conflicting declarations"):
+        _dedupe_root_namespace_decls(xml_text)
+
+
+def test_empty_property_value_and_description_round_trip_as_empty_string():
+    """<description/> is a valid, present-but-empty xs:string element
+    (minOccurs="0") distinct from the element being absent. Before the
+    fix, both _read_global_content's use of _text_of() and
+    _read_property_or_content's own inline description-reading loop used
+    `child.text` directly -- None for an empty element in both lxml and
+    ElementTree -- so an empty <description/> was indistinguishable from a
+    missing one, and dumps() silently dropped it on the next round trip."""
+    import maiml_domain as m
+
+    prop = m.StringType(key="ex:note", value="", description="")
+    root = _minimal_root_with_result_property(prop)
+
+    xml_text = serialization.dumps(root, extra_namespaces={"ex": "http://example.org/ex"})
+    assert "<description/>" in xml_text or "<description />" in xml_text
+
+    loaded = serialization.loads(xml_text)
+    loaded_prop = _find_property(loaded.root, "ex:note")
+    assert loaded_prop.value == ""
+    assert loaded_prop.description == ""
+
+
+def test_absent_property_description_still_round_trips_as_none():
+    """Companion to the test above: the fix must not turn "absent" into
+    "" -- only "present but empty" should become ''."""
+    import maiml_domain as m
+
+    prop = m.StringType(key="ex:note", value="x")
+    root = _minimal_root_with_result_property(prop)
+
+    xml_text = serialization.dumps(root, extra_namespaces={"ex": "http://example.org/ex"})
+    loaded = serialization.loads(xml_text)
+    loaded_prop = _find_property(loaded.root, "ex:note")
+    assert loaded_prop.description is None
+
+
+def _minimal_root_with_result_insertion(insertion):
+    """Build the smallest MaimlRootType whose single result carries
+    `insertion` -- mirrors _minimal_root_with_result_property, but for the
+    insertion* branch of globalObjectContentGroup instead of property*."""
+    import maiml_domain as m
+
+    from pymaiml.builders import IdFactory, new_complete_event
+
+    ids = IdFactory()
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+                       content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    instr = m.InstructionType(id=ids.new_id("instr"),
+                               transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    rt = m.ResultTemplateType(id=ids.new_id("rt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], result_templates=[rt],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(id=ids.new_id("creator"),
+                             vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    document = m.DocumentType(id=ids.new_id("doc"), date=dt.datetime.now(dt.timezone.utc),
+                               creators=[creator], vendors=[vendor], owners=[owner],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    result = m.ResultType(id=ids.new_id("result"), ref=rt.id,
+                           content=m.GlobalObjectContent(uuid=ids.new_uuid(), insertions=[insertion]))
+    results = m.ResultsType(id=ids.new_id("results"), results=[result], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    data = m.DataType(id=ids.new_id("data"), results_list=[results], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    event = new_complete_event(ids.new_id("event"), instr.id, id_factory=ids)
+    trace = m.TraceType(id=ids.new_id("trace"), ref=program.id, events=[event], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    log = m.LogType(id=ids.new_id("log"), ref=method.id, traces=[trace], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+
+def _find_insertion(root_obj):
+    result = root_obj.data.results_list[0].results[0]
+    return result.content.insertions[0]
+
+
+def test_empty_insertion_format_round_trips_as_empty_string():
+    """Same absent-vs-empty bug as the property description test above,
+    but for InsertionType.format (_read_insertion() had its own,
+    independent instance of the same `child.text if ... else None`
+    pattern)."""
+    import maiml_domain as m
+
+    insertion = m.InsertionType(uri="a.png", hash=m.HashType(value=b"\x00" * 32), format="")
+    root = _minimal_root_with_result_insertion(insertion)
+
+    xml_text = serialization.dumps(root)
+    assert "<format/>" in xml_text or "<format />" in xml_text
+
+    loaded = serialization.loads(xml_text)
+    assert _find_insertion(loaded.root).format == ""
+
+
+def test_absent_insertion_format_still_round_trips_as_none():
+    """Companion to the test above: an insertion with no format at all
+    must still come back as None, not ""."""
+    import maiml_domain as m
+
+    insertion = m.InsertionType(uri="a.png", hash=m.HashType(value=b"\x00" * 32))
+    root = _minimal_root_with_result_insertion(insertion)
+
+    loaded = serialization.loads(serialization.dumps(root))
+    assert _find_insertion(loaded.root).format is None

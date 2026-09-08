@@ -120,6 +120,48 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `pymaiml.serialization`のみで再構築するテストを通じて発見した
   不具合(特に後者はCCORRELATION.maimlの`<uncertainty>`付き
   measurement値で顕在化した)。
+- `pymaiml.serialization`: `document`に`Signature`を持つファイルを
+  `loads()`→`dumps(..., extra_namespaces=loaded.namespaces)`という、
+  `LoadedMaiml.namespaces`のdocstringが案内する手順どおりに再書き出しする
+  と、ルート`<maiml>`要素に同じ`xmlns:nsN`宣言が二重に現れ
+  `xml.parsers.expat.ExpatError: duplicate attribute`で失敗していた
+  不具合を修正。`<Signature>`/`<EncryptedData>`は`ET.fromstring()`で
+  読み直してそのまま木に追加する生XMLであり、そこで実際に使われている
+  名前空間を`xml.etree.ElementTree`が木全体走査で発見してルート要素に
+  自動で`xmlns:nsN`宣言を追加する一方、こちらが`extra_namespaces`から
+  設定した同名のリテラル属性の存在をElementTreeは関知しないため、両者が
+  同じプレフィックスを使うと二重宣言になっていた。`dumps()`に
+  `_dedupe_root_namespace_decls()`を追加し、ルート要素上で同名・同値の
+  宣言が重複したときは1つにまとめ、同名で値が異なる(真の競合)場合は
+  分かりやすい`ValueError`を送出するようにした。
+- `pymaiml.serialization`: `<description>`/`<format>`のような
+  `xs:string minOccurs="0"`の要素が、存在するが空(`<description/>`)の
+  場合と要素そのものが存在しない場合を区別できず、どちらも`None`として
+  読み込まれ、往復後に要素が消えていた不具合を修正
+  (`value`側は空文字列として正しく保たれており、ライブラリ内で挙動が
+  不統一だった)。`_text_of()`と、独自に同じ判定を行っていた
+  `_read_property_or_content()`/`_read_insertion()`のそれぞれで、
+  「子要素が存在しない」場合のみ`None`を返し、存在する場合は
+  `.text or ""`で空文字列を返すよう統一した。
+- README.md: 「ローカルでMaiML-Domainと同時に開発する場合」の手順を
+  記載どおりに実行すると、`pip install -e ../MaiML-Domain`で入れた
+  editable版が、続く`pip install -e ".[dev]"`によってエラーなく
+  アンインストールされ、`git+...@v0.1.0`タグ由来の固定版に静かに
+  差し替わってしまう(Domain側を編集しても反映されない状態に気づけない)
+  不具合を修正。`dependencies`のdirect URL指定(`maiml-domain @
+  git+...`)がある限り`pip install -e ".[dev]"`は毎回このタグ版を
+  再インストールするため、`pip install --no-deps -e .`を使い、
+  `[dev]`の依存(`lxml`/`pytest`)は個別にインストールする手順に修正した。
+- 上記のうち`pymaiml.serialization`側2件について、回帰防止テストを
+  `tests/test_serialization.py`に追加
+  (`test_signature_round_trips_without_duplicate_namespace_error`、
+  `test_dumps_rejects_genuinely_conflicting_root_namespace_declaration`、
+  `test_empty_property_value_and_description_round_trip_as_empty_string`、
+  `test_absent_property_description_still_round_trips_as_none`、
+  `test_empty_insertion_format_round_trips_as_empty_string`、
+  `test_absent_insertion_format_still_round_trips_as_none`)。
+  いずれも外部レビュー(2026-09-07、PyMaiML `690edd6`/MaiML-Domain
+  `be11e5c`時点)で報告された「要修正」所見3件の再現コードに基づく。
 
 ## [0.1.0] - 未リリース
 

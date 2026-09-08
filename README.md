@@ -53,14 +53,27 @@ MaiML-Domainを`main`ブランチのまま参照すると、Domain側の将来�
 Domain側とSDK側を手元で同時に編集しながら動かしたい場合は、兄弟フォルダ
 としてクローンした上でeditableインストールに切り替えると便利です。
 
+**`pip install -e ../MaiML-Domain`の後に`pip install -e ".[dev]"`を続けて
+実行しないでください。** `dependencies`の
+`maiml-domain @ git+...@v0.1.0`はdirect URL指定であり、pipは既存の
+editableインストールで要件が満たされているとは判断しません。そのため
+2つ目のコマンドが1つ目で入れたeditable版を**エラーを出さずに**
+アンインストールし、gitタグ`v0.1.0`から取得した固定版に静かに差し替えて
+しまいます(Domain側を編集しても反映されない状態に陥り、気づきにくい
+のが厄介な点です)。代わりに`--no-deps`を使い、依存(`lxml`/`pytest`)は
+個別にインストールしてください。
+
 ```bash
 pip install -e ../MaiML-Domain
-pip install -e ".[dev]"
+pip install "lxml>=4.9" pytest
+pip install --no-deps -e .
 ```
 
-この場合`pyproject.toml`の変更は不要です(後からインストールした
-editable版がpip環境内で優先されます)。ただし、CI/リリースビルドでは
-必ず上記のGit+タグ指定の依存関係を使ってください。
+この手順なら`pyproject.toml`の変更は不要で、両方がeditableのまま
+保たれます(`pip show maiml-domain`の`Location`がクローン先のパスに
+なっていることで確認できます)。ただし、CI/リリースビルドでは
+必ず上記のGit+タグ指定の依存関係(`pip install -e ".[dev]"`)を
+使ってください。
 
 ## モジュール構成
 
