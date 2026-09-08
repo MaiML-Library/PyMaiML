@@ -120,10 +120,6 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `test_drop_stale_signature_requires_a_snapshot_from_loads`)。
 
 ### Fixed
-- `pymaiml/__init__.py`: モジュールdocstringに`loads/load is not
-  implemented yet`という古い記述が残っており(両関数とも実装済み)、
-  `help(pymaiml)`で最初に読まれる箇所で実装状況を誤解させていた不具合を
-  修正(外部レビュー所見08)。
 - `pymaiml.serialization`: `<uncertainty>`要素が書き込み・読み込みの両方で
   無視されていた不具合を修正。スキーマの`uncertaintyBaseType`は
   `propertyBaseType`/`contentBaseType`共通の抽象基底型であり、
@@ -206,6 +202,26 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   を送出するようにした。回帰防止テストを2件追加
   (`test_units_on_a_class_that_does_not_accept_it_raises_a_clear_error`、
   `test_units_formatstring_scalefactor_on_a_class_that_accepts_them_still_work`)。
+- `pymaiml.builders.infer_property()`/`infer_content()`: `values=`の
+  homogeneous判定が実際にはvalues[0]しか見ておらず、例えば
+  `infer_property("ex:value", values=[1, 2, "abc"])`のような型の
+  混在したリストでもエラーにならず`IntListType`が選ばれ、"abc"が
+  そのまま紛れ込んでいた不具合を修正(docstringには元々
+  "must be non-empty and homogeneous"と明記されていたが、実装がそれを
+  満たしていなかった)。`_infer_homogeneous_list_class()`を追加し、
+  values[0]から選んだクラスに、残りの全要素も`_match()`と同じ規則で
+  一致するかを確認するようにした。「Pythonのclassが完全一致」ではなく
+  「選択されたMaiML型に(同じ推定テーブル上で)変換可能か」で判定して
+  いるため、`bytes`/`bytearray`混在(どちらも`Base64Binary*ListType`)は
+  引き続き許可されるが、`bool`/`int`混在(`bool`は`int`のサブクラスだが
+  別のMaiML型`BooleanListType`/`IntListType`に対応するため)は拒否される。
+  回帰防止テストを`tests/test_builders.py`に5件追加
+  (`test_infer_property_rejects_heterogeneous_values`、
+  `test_infer_content_rejects_heterogeneous_values`、
+  `test_infer_property_rejects_bool_mixed_with_int`、
+  `test_infer_property_accepts_bytes_and_bytearray_together`、
+  `test_infer_property_heterogeneous_error_names_the_offending_element`)。
+  外部レビューで報告された所見。
 
 ### Changed
 - README.md: `pymaiml.serialization`の節に既知の制限を2点追記。

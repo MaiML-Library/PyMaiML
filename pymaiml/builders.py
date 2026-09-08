@@ -251,6 +251,52 @@ def _match(value_type: type, table) -> Optional[type]:
     return None
 
 
+def _infer_homogeneous_list_class(values: List[Any], table, *, caller: str, kind_noun: str) -> type:
+    """
+    Resolve the single list-type class every element of `values` maps to
+    via `table`, raising TypeError if the elements are not homogeneous.
+
+    Used by infer_property (list branch) and infer_content, both of which
+    document their `values=` as "must be non-empty and homogeneous" but,
+    before this helper existed, only ever looked at values[0] -- so e.g.
+    values=[1, 2, "abc"] silently picked IntListType and let "abc" through,
+    with the mistake surfacing (if at all) only much later as an opaque XSD
+    validation failure instead of here, at the point a builder could still
+    give a clear error.
+
+    "Homogeneous" means every element resolves to the SAME cls via `table`
+    (the same rule `_match` applies to values[0]) -- not that every
+    element's exact Python class matches values[0]'s. That distinction
+    matters in both directions:
+      - bytes and bytearray are two separate `table` rows that both map to
+        Base64Binary*ListType, and must be accepted together;
+      - bool must NOT be accepted alongside int, even though bool is a
+        Python subclass of int, because `table` checks bool before int
+        (see _SCALAR_CLASS_BY_TYPE's comment) and so maps them to
+        different, XSD-distinct list types (boolean vs int) -- an
+        isinstance(v, int) check would miss this, since isinstance(True,
+        int) is True.
+    """
+    first_cls = _match(type(values[0]), table)
+    if first_cls is None:
+        raise TypeError(
+            f"{caller}: no known {kind_noun} list type for element type "
+            f"{type(values[0])!r}; pass xsi_type= explicitly, or construct "
+            "the maiml_domain class directly."
+        )
+    bad_index = next((i for i, v in enumerate(values) if _match(type(v), table) is not first_cls), None)
+    if bad_index is not None:
+        raise TypeError(
+            f"{caller}: values must be non-empty and homogeneous -- element 0 is "
+            f"{type(values[0]).__name__!r} (-> {first_cls.__name__}), but element "
+            f"{bad_index} is {type(values[bad_index]).__name__!r}, which does not "
+            "belong to the same inferred type. Pass xsi_type= explicitly, or "
+            "construct the maiml_domain class directly, if a heterogeneous list "
+            "is genuinely intended."
+        )
+    return first_cls
+
+
 def _resolve_xsi_type(xsi_type: Optional[Union[str, type]]) -> Optional[type]:
     """xsi_type= accepts either the maiml_domain class itself (m.FloatType)
     or the xsi:type name it corresponds to ("floatType"), resolved via
@@ -297,12 +343,16 @@ def infer_property(
 
     Normally the concrete class is chosen from the Python type of `value`
     (scalar) or the elements of `values` (list -- must be non-empty and
-    homogeneous). xsi:type is required by the schema regardless, so when
-    there is no value yet to infer it from -- the common case for a
-    protocol element's placeholder property -- pass it explicitly via
-    `xsi_type=` (either the maiml_domain class, e.g. `m.FloatType`, or the
-    xsi:type name, e.g. `"floatType"`). It is an error to have neither: a
-    value/values to infer from, nor an explicit xsi_type=.
+    homogeneous; this is enforced -- every element must belong to the same
+    inferred type as values[0], e.g. all int or all str, or a TypeError is
+    raised naming the offending element, rather than silently choosing a
+    type from values[0] alone and letting the rest through unchecked).
+    xsi:type is required by the schema regardless, so when there is no
+    value yet to infer it from -- the common case for a protocol element's
+    placeholder property -- pass it explicitly via `xsi_type=` (either the
+    maiml_domain class, e.g. `m.FloatType`, or the xsi:type name, e.g.
+    `"floatType"`). It is an error to have neither: a value/values to infer
+    from, nor an explicit xsi_type=.
 
     Pass a shared `registry=` (an `XsiTypeRegistry`) across a document's
     protocol and data sections to guarantee the placeholder declared in the
@@ -340,12 +390,9 @@ def infer_property(
         if values is not None:
             if not values:
                 raise ValueError("infer_property: values must be non-empty to infer a type")
-            cls = _match(type(values[0]), _LIST_CLASS_BY_TYPE)
-            if cls is None:
-                raise TypeError(
-                    f"infer_property: no known property list type for element type {type(values[0])!r}; "
-                    "pass xsi_type= explicitly, or construct the maiml_domain class directly."
-                )
+            cls = _infer_homogeneous_list_class(
+                values, _LIST_CLASS_BY_TYPE, caller="infer_property", kind_noun="property"
+            )
         elif value is not None:
             cls = _match(type(value), _SCALAR_CLASS_BY_TYPE)
             if cls is None:
@@ -380,10 +427,13 @@ def infer_content(
     no scalar content type).
 
     Normally the concrete class is chosen from the Python type of `values`'
-    elements (must be non-empty and homogeneous). xsi:type is required by
-    the schema regardless, so when there are no values yet -- the common
-    case for a protocol element's placeholder content, which may only
-    describe axis=/size= for now -- pass it explicitly via `xsi_type=`
+    elements (must be non-empty and homogeneous; this is enforced -- every
+    element must belong to the same inferred type as values[0], or a
+    TypeError is raised naming the offending element). xsi:type is
+    required by the schema regardless, so when there are no values yet --
+    the common case for a protocol element's placeholder content, which
+    may only describe axis=/size= for now -- pass it explicitly via
+    `xsi_type=`
     (either the maiml_domain class, e.g. `m.ContentFloatListType`, or the
     xsi:type name, e.g. `"contentFloatListType"`). It is an error to have
     neither: non-empty values= to infer from, nor an explicit xsi_type=.
@@ -417,12 +467,9 @@ def infer_content(
                 "xsi_type=<maiml_domain class or xsi:type name> explicitly; this is the "
                 "common case for a protocol placeholder content that has no values yet."
             )
-        cls = _match(type(values[0]), _CONTENT_LIST_CLASS_BY_TYPE)
-        if cls is None:
-            raise TypeError(
-                f"infer_content: no known content list type for element type {type(values[0])!r}; "
-                "pass xsi_type= explicitly, or construct the maiml_domain class directly."
-            )
+        cls = _infer_homogeneous_list_class(
+            values, _CONTENT_LIST_CLASS_BY_TYPE, caller="infer_content", kind_noun="content"
+        )
 
     if registry is not None:
         registry.register(key, cls)

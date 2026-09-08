@@ -60,6 +60,42 @@ def test_infer_content_dispatch():
 
 
 # ---------------------------------------------------------------------------
+# values=: homogeneity is checked across the whole list, not just values[0]
+# ---------------------------------------------------------------------------
+
+def test_infer_property_rejects_heterogeneous_values():
+    # Before the fix, only values[0] (int) was inspected, so this silently
+    # produced an IntListType carrying the string "abc" as one of its ints.
+    with pytest.raises(TypeError, match="homogeneous"):
+        infer_property("ex:k", values=[1, 2, "abc"])
+
+
+def test_infer_content_rejects_heterogeneous_values():
+    with pytest.raises(TypeError, match="homogeneous"):
+        infer_content("ex:wave", values=[1.0, 2.0, "abc"])
+
+
+def test_infer_property_rejects_bool_mixed_with_int():
+    # bool is a Python subclass of int, so a naive `isinstance(v, int)`
+    # homogeneity check would wrongly accept this; bool/int must map to
+    # different (BooleanListType vs IntListType) MaiML list types.
+    with pytest.raises(TypeError, match="homogeneous"):
+        infer_property("ex:k", values=[True, False, 1])
+
+
+def test_infer_property_accepts_bytes_and_bytearray_together():
+    # bytes and bytearray both legitimately map to Base64BinaryListType --
+    # an exact type(values[0]) == type(v) check would wrongly reject this.
+    prop = infer_property("ex:k", values=[b"abc", bytearray(b"xyz")])
+    assert isinstance(prop, m.Base64BinaryListType)
+
+
+def test_infer_property_heterogeneous_error_names_the_offending_element():
+    with pytest.raises(TypeError, match=r"element 2 is 'str'"):
+        infer_property("ex:k", values=[1, 2, "abc"])
+
+
+# ---------------------------------------------------------------------------
 # xsi_type=: explicit override, mainly for protocol placeholders with no
 # value yet (xsi:type is still required by the schema even then)
 # ---------------------------------------------------------------------------
