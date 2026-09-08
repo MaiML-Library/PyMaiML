@@ -47,12 +47,16 @@ Known limitations (documented rather than silently guessed at):
     reports whatever was declared on the root element via
     LoadedMaiml.namespaces so a load-modify-dump round trip can reuse it
     without the caller having to re-track it by hand.
+  - document.signature (a <Signature> read back by loads()) is read for
+    inspection but never re-emitted by dumps()/dump() -- see dumps()'s
+    docstring for why. If you need a signed output, sign the bytes dumps()
+    produces with a dedicated tool (e.g. the maiml-signer skill), after
+    dumping, not before.
 """
 from __future__ import annotations
 
 import base64
 import binascii
-import copy
 import inspect
 import re
 from dataclasses import dataclass, field
@@ -263,20 +267,17 @@ def _write_arc(parent_el: ET.Element, arc: "m.ArcType") -> ET.Element:
 # document  (maiml-document.xsd)
 # ---------------------------------------------------------------------------
 
-def _write_document(
-    parent_el: ET.Element, doc: "m.DocumentType", *, suppress_signature: bool = False
-) -> ET.Element:
+def _write_document(parent_el: ET.Element, doc: "m.DocumentType") -> ET.Element:
     """documentType: Signature? -> content -> creator+ -> vendor+ -> owner+ ->
     instrument* -> date -> chain* -> parent*.
 
-    suppress_signature: write everything except <Signature>, even if
-    doc.signature is set. Used by dumps(drop_stale_signature=...) to omit a
-    now-stale signature from the OUTPUT without mutating the caller's
-    DocumentType.signature field, and by _content_changed_since_snapshot()
-    to compare two object trees while ignoring the signature itself."""
+    An existing doc.signature (as read back by loads()) is intentionally
+    never re-emitted here: dumps() always drops it. See dumps()'s
+    docstring for the rationale (an enveloped XML signature is a claim
+    about the exact serialized byte form pymaiml cannot guarantee to
+    reproduce, and pymaiml does not implement signing/verification
+    itself)."""
     doc_el = ET.SubElement(parent_el, "document", {"id": doc.id})
-    if doc.signature is not None and not suppress_signature:
-        doc_el.append(ET.fromstring(doc.signature))
     _write_global_content(doc_el, doc.content)
     for c in doc.creators:
         c_el = ET.SubElement(doc_el, "creator", {"id": c.id})
@@ -506,15 +507,15 @@ def _dedupe_root_namespace_decls(xml_text: str) -> str:
     up front, and once more because xml.etree.ElementTree's own namespace
     machinery auto-declares a prefix (ns0, ns1, ...) for whatever real
     {uri}-qualified content got appended verbatim from a loaded
-    <Signature>/<EncryptedData> block (_write_document/
-    _write_property_or_content parse those with ET.fromstring() and
-    append them as-is; unlike the rest of this module they carry genuine
-    namespace-qualified tags, which ElementTree's serializer discovers by
-    scanning the whole tree and declares at the root -- it has no way to
-    know a literal same-named attribute is already there). The result is
-    a root element with the same attribute name twice, which is a
-    well-formedness error (ExpatError: duplicate attribute) once fed
-    through minidom, and invalid XML even with pretty=False.
+    <EncryptedData> block (_write_encryption parses that with
+    ET.fromstring() and appends it as-is; unlike the rest of this module
+    it carries genuine namespace-qualified tags, which ElementTree's
+    serializer discovers by scanning the whole tree and declares at the
+    root -- it has no way to know a literal same-named attribute is
+    already there). The result is a root element with the same attribute
+    name twice, which is a well-formedness error (ExpatError: duplicate
+    attribute) once fed through minidom, and invalid XML even with
+    pretty=False.
 
     A load-modify-dump round trip of pymaiml's own output always
     produces the *same* URI for a colliding prefix (ElementTree assigns
@@ -540,7 +541,7 @@ def _dedupe_root_namespace_decls(xml_text: str) -> str:
                     f"<maiml> element ({seen[name]!r} vs {value!r}). This can "
                     "happen when extra_namespaces reuses a prefix that "
                     "xml.etree.ElementTree also auto-assigns to a namespace used "
-                    "inside an embedded <Signature>/<EncryptedData> block -- pass "
+                    "inside an embedded <EncryptedData> block -- pass "
                     "a non-conflicting extra_namespaces mapping (e.g. drop the "
                     "auto-assigned prefix from loaded.namespaces before "
                     "re-dumping)."
@@ -556,13 +557,9 @@ def _build_maiml_element(
     root_obj: Union["m.MaimlRootType", "m.ProtocolFileRootType"],
     *,
     extra_namespaces: Optional[Dict[str, str]] = None,
-    suppress_signature: bool = False,
 ) -> ET.Element:
-    """Build the <maiml> ElementTree tree for root_obj (shared by dumps()
-    and _content_changed_since_snapshot(), which both need the exact same
-    field-by-field walk of the object tree -- one to actually serialize a
-    file, the other only to compare two trees for equality without
-    re-implementing a second, possibly-incomplete walk by hand)."""
+    """Build the <maiml> ElementTree tree for root_obj (the single
+    field-by-field walk of the object tree that dumps() uses)."""
     if not isinstance(root_obj, (m.MaimlRootType, m.ProtocolFileRootType)):
         raise TypeError(
             "dumps() requires a maiml_domain.MaimlRootType or "
@@ -581,7 +578,7 @@ def _build_maiml_element(
     if root_obj.features:
         maiml_el.set("features", root_obj.features)
 
-    _write_document(maiml_el, root_obj.document, suppress_signature=suppress_signature)
+    _write_document(maiml_el, root_obj.document)
     _write_protocol(maiml_el, root_obj.protocol)
     if isinstance(root_obj, m.MaimlRootType):
         _write_data(maiml_el, root_obj.data)
@@ -589,38 +586,11 @@ def _build_maiml_element(
     return maiml_el
 
 
-def _content_changed_since_snapshot(current_root_obj, snapshot_root_obj) -> bool:
-    """True if anything other than document.signature differs between
-    current_root_obj and a load-time snapshot (see LoadedMaiml._snapshot /
-    dumps(drop_stale_signature=...)).
-
-    maiml_domain's DocumentType/MaimlRootType/ProtocolFileRootType (and
-    every other HasIdAttributeType/RootObjectType subclass) have a custom
-    __init__ and no __eq__, so plain `==` on them is identity comparison,
-    not value comparison -- two structurally-identical-but-separate
-    instances (e.g. a copy.deepcopy()'d snapshot vs. the live, possibly-
-    edited object) would always compare unequal even with nothing changed.
-    dataclasses.replace()/fields() don't apply either, since these classes
-    aren't dataclasses. Rather than hand-writing a second, possibly-
-    incomplete deep-equality walk, we reuse the walk dumps() itself already
-    does: serialize both trees with any <Signature> suppressed (so the
-    comparison ignores the signature itself, which is the one field we
-    expect -- and allow -- to differ) and compare the resulting XML text."""
-    current_fingerprint = ET.tostring(
-        _build_maiml_element(current_root_obj, suppress_signature=True), encoding="unicode"
-    )
-    snapshot_fingerprint = ET.tostring(
-        _build_maiml_element(snapshot_root_obj, suppress_signature=True), encoding="unicode"
-    )
-    return current_fingerprint != snapshot_fingerprint
-
-
 def dumps(
     root_obj: Union["m.MaimlRootType", "m.ProtocolFileRootType"],
     *,
     extra_namespaces: Optional[Dict[str, str]] = None,
     pretty: bool = True,
-    drop_stale_signature: Optional["LoadedMaiml"] = None,
 ) -> str:
     """
     Serialize a MaimlRootType/ProtocolFileRootType object tree to a MaiML
@@ -635,50 +605,41 @@ def dumps(
     must likewise be declared here with their exact standard URIs
     (http://www.xes-standard.org/<name>.xesext#).
 
-    drop_stale_signature: pass the LoadedMaiml returned by loads() to have
-    dumps() automatically omit <Signature> from the OUTPUT (without
-    mutating root_obj.document.signature) if anything besides the
-    signature itself has changed since that load -- e.g.:
+    root_obj.document.signature (a <Signature> loads() read back from an
+    existing file) is ALWAYS dropped from the output, unconditionally --
+    there is no parameter to keep it. Earlier versions had a
+    drop_stale_signature= parameter that kept a signature through when
+    dumps() could tell nothing besides the signature had changed since
+    load; that has been removed.
 
-        loaded = pymaiml.loads(xml_text)
-        loaded.root.data.results_list[0].materials.append(new_material)
-        xml_text2 = pymaiml.dumps(
-            loaded.root,
-            extra_namespaces=loaded.namespaces,
-            drop_stale_signature=loaded,
-        )
+    The reason is not merely "an edited file's signature is stale" -- it's
+    that dumps() cannot make ANY serialization of this object tree a safe
+    carrier of a pre-existing enveloped signature, changed or not. MaiML's
+    <Signature> is an enveloped XML signature under JIS X 5093 / ETSI TS
+    101 903 (XAdES): the digest is computed over the exact serialized byte
+    form of the document at the moment of signing, and JIS's own signing
+    procedure treats that byte form as fixed afterwards (nothing may be
+    added after the closing </Signature> tag but a trailing newline).
+    dumps() reconstructs the tree from maiml_domain objects and re-applies
+    its own formatting (indentation, namespace-declaration placement,
+    attribute ordering, empty-element representation, ...); it does not
+    reproduce another implementation's exact byte form, and pymaiml does
+    not implement XAdES signing or verification itself (see
+    CONTRIBUTING.md) -- so it has no way to certify that any particular
+    dumps() output is still a valid carrier for a signature it did not
+    just compute itself. Treating "detectably unchanged content" as
+    grounds for keeping the old signature (the previous behavior) implied
+    a safety guarantee pymaiml cannot actually make.
 
-    A signature is a claim about the file's content at the moment it was
-    computed (see the external review's Finding 04 in CHANGELOG.md).
-    pymaiml does not compute or verify that claim itself -- signing and
-    cryptographic verification deliberately live outside pymaiml (see
-    CONTRIBUTING.md) -- but it CAN tell you, cheaply and without any
-    cryptography, whether you edited anything besides the signature since
-    loading, which is when the OLD signature is certain to no longer
-    describe the file. This is a convenience for that specific, common
-    case; it does not replace actually re-signing the output before
-    treating it as signed again. If nothing changed, the signature is
-    passed through unmodified, exactly as dumps() always did before this
-    parameter existed. Requires a LoadedMaiml that actually came from
-    loads() (it carries the load-time snapshot this needs) -- raises
-    ValueError otherwise.
+    Practically: pymaiml.serialization.loads() still reads
+    root_obj.document.signature back for inspection (e.g. to hand to an
+    external verifier), but dumps()/dump() never write it back out. If you
+    need a signed MaiML file, dump the content first, then sign the
+    resulting bytes with a dedicated tool (e.g. the maiml-signer skill) --
+    treat "build/edit the MaiML content" and "sign the finished file" as
+    two separate steps, in that order, never the other way around.
     """
-    suppress_signature = False
-    if drop_stale_signature is not None:
-        if drop_stale_signature._snapshot is None:
-            raise ValueError(
-                "drop_stale_signature requires the LoadedMaiml returned by "
-                "pymaiml.serialization.loads() -- it carries the load-time "
-                "content snapshot needed to detect edits. A LoadedMaiml "
-                "constructed by hand (e.g. in a test) has no such snapshot."
-            )
-        suppress_signature = _content_changed_since_snapshot(
-            root_obj, drop_stale_signature._snapshot
-        )
-
-    maiml_el = _build_maiml_element(
-        root_obj, extra_namespaces=extra_namespaces, suppress_signature=suppress_signature
-    )
+    maiml_el = _build_maiml_element(root_obj, extra_namespaces=extra_namespaces)
 
     rough = ET.tostring(maiml_el, encoding="unicode")
     rough = _dedupe_root_namespace_decls(rough)
@@ -1215,15 +1176,6 @@ class LoadedMaiml:
     root: Union["m.MaimlRootType", "m.ProtocolFileRootType"]
     namespaces: Dict[str, str] = field(default_factory=dict)
     ids: List[str] = field(default_factory=list)
-    _snapshot: Optional[Union["m.MaimlRootType", "m.ProtocolFileRootType"]] = field(
-        default=None, repr=False, compare=False, init=False
-    )
-    """A copy.deepcopy() of `root` taken at load time, set by loads() right
-    after construction (never by callers). Powers dumps(drop_stale_signature=
-    this_LoadedMaiml): comparing the live (possibly-edited) `root` against
-    this frozen copy is how dumps() tells whether anything besides the
-    signature changed since the load. Excluded from __init__/repr/equality
-    so LoadedMaiml's public constructor signature is unchanged."""
 
 
 def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
@@ -1270,9 +1222,7 @@ def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
             f"Unknown maiml/@xsi:type: {xsi_type!r} (expected 'maimlRootType' or 'protocolFileRootType')"
         )
 
-    loaded = LoadedMaiml(root=root_obj, namespaces=namespaces, ids=all_ids)
-    loaded._snapshot = copy.deepcopy(root_obj)
-    return loaded
+    return LoadedMaiml(root=root_obj, namespaces=namespaces, ids=all_ids)
 
 
 def load(path: Union[str, Path]) -> LoadedMaiml:

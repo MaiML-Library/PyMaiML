@@ -337,6 +337,54 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   なるため動作上のバグではなく、インポート時に無駄なリフレクション処理を
   もう一度実行していた分のコードの明快さの改善。ユーザー指摘。
 
+### Changed(破壊的変更)
+- **`pymaiml.serialization.dumps()`/`dump()`は、既存の`document.signature`
+  (`<Signature>`)を常に出力から除外するよう変更しました。**
+  `drop_stale_signature=`引数(署名以外の内容が変わっていなければ署名を
+  維持する、変わっていれば省く)は廃止し、除外に条件分岐はなくなりました。
+  これは本ファイル冒頭の`### Added`に記載した、`drop_stale_signature=`
+  引数の追加エントリを置き換える変更です。
+  理由は「署名以外が変わっていなければ安全に維持できる」という前提
+  そのものがpymaimlの立場からは保証できないと判断したためです。MaiMLの
+  `<Signature>`はJIS X 5093 / ETSI TS 101 903(XAdES)準拠のenveloped
+  署名であり、Digestは署名時点の厳密なバイト列に対して計算されます。
+  `dumps()`は`maiml_domain`のオブジェクトツリーからXMLを再構築する際、
+  インデント・namespace宣言位置・属性順序・空要素表現などを含めて
+  出力を作り直すため、内容(`document.signature`以外のフィールド)が
+  一切変わっていなくても、署名時点の厳密なバイト列を再現できるとは
+  保証できません。`pymaiml`は署名の生成・検証そのものを実装しておらず
+  (`CONTRIBUTING.md`の「XML Signature(電子署名)の扱い」節を新設し、
+  明文化しました)、この「バイト列が変わっていないかどうか」を判断する
+  資格自体がpymaimlにはない、という整理です。
+  影響: `pymaiml.serialization.loads()`は`<Signature>`を読み込み、
+  `DocumentType.signature`に文字列として保持する動作(検証等への
+  受け渡し用)は変更していません。変わるのは書き出し側のみで、
+  「署名済みファイルをloads()→(無編集で)dumps()しても、出力に
+  `<Signature>`は含まれない」という点が、以前(署名以外に変更が無ければ
+  維持されていた)から変わります。署名済みファイルが必要な場合は、
+  `dumps()`/`dump()`で内容を確定させた後に、その出力バイト列へ
+  `maiml-signer`スキル等で改めて署名してください。`pymaiml`へ将来
+  署名対応を追加する場合も、`pymaiml.serialization`とは独立した
+  モジュール(例: `pymaiml.signature`)に分離することを`CONTRIBUTING.md`
+  で推奨事項として明記しました。
+  内部実装としては、`_write_document()`から`suppress_signature`引数と
+  シグネチャ書き込み分岐そのものを削除、`_build_maiml_element()`からも
+  同引数を削除、`_content_changed_since_snapshot()`(スナップショットとの
+  差分検出)を削除、`LoadedMaiml._snapshot`(ロード時`copy.deepcopy()`)
+  を削除しました。回帰テストは`tests/test_serialization.py`の
+  drop_stale_signature系4件を、常時除外の挙動を確認する4件
+  (`test_dumps_never_writes_a_document_signature`、
+  `test_loads_still_reads_a_signature_dumps_never_wrote`、
+  `test_dumps_drops_a_loaded_signature_even_with_no_further_edits`、
+  `test_dumps_no_longer_accepts_drop_stale_signature`)に置き換えました。
+  また、既存の`test_signature_round_trips_without_duplicate_namespace_
+  error`(`<Signature>`往復時の名前空間重複バグの回帰テスト)は、
+  `dumps()`がもう`<Signature>`を書き戻さないため前提が崩れたので、
+  同じ`_dedupe_root_namespace_decls()`の保護を`<EncryptedData>`
+  (`_write_encryption()`が同様に埋め込みXML断片をそのまま追記する経路)
+  で検証する`test_encrypted_data_round_trips_without_duplicate_
+  namespace_error`に置き換えました。ユーザー指摘・提案。
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

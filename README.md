@@ -146,15 +146,23 @@ pip install --no-deps -e .
     いません。ファイルの妥当性が不明な場合は、先に
     `pymaiml.validation.validate()`でエラー箇所を(1件ずつではなく)
     まとめて特定してください。
-  - `document`に`Signature`(XML電子署名)を持つファイルを`loads()`→
-    `dumps()`で往復させると、`dumps()`が`xml.dom.minidom`で全体を
-    pretty-print整形し直すため、署名対象バイト列(enveloped変換後の
-    C14N出力)が変わり、他の準拠実装が付与した署名は無効になります。
-    `pymaiml`自身が書き出した署名を読み直す場合はC14N出力が一致する
-    ため無効化されませんが、外部で署名されたファイルを`loads()`→
-    `dumps()`で往復させる用途(署名を保ったままの部分更新)には現状
-    対応していません。そのような更新が必要な場合は、原文のバイト列に
-    対して直接パッチを当ててください。
+  - `document`に`Signature`(XML電子署名)を持つファイルは`loads()`で
+    読み込めます(`loaded.root.document.signature`として文字列のまま
+    保持され、検証等に利用できます)が、`dumps()`/`dump()`は既存の
+    `Signature`を**常に**出力から除外します。原則として維持する手段は
+    ありません。MaiMLの`<Signature>`はJIS X 5093 / ETSI TS 101 903
+    (XAdES)準拠のenveloped署名であり、Digestは署名時点の厳密なバイト列
+    に対して計算されます。`dumps()`はオブジェクトツリーから
+    インデント・namespace宣言位置・属性順序・空要素表現などを含めて
+    XMLを再構築するため、内容を一切変更していなくても元のバイト列を
+    再現できる保証がなく、`pymaiml`自身は署名の生成・検証を実装して
+    いません(CONTRIBUTING.md参照)。そのため、「内容が変わっていない
+    から署名を維持してよい」という判断自体を`pymaiml`が行うことは
+    安全性を保証できず、以前あった`drop_stale_signature=`引数
+    (変更検出時のみ除外)は廃止し、常に除外する方式に変更しました。
+    署名済みファイルが必要な場合は、`dumps()`/`dump()`で内容を確定させた
+    「後で」、その出力バイト列に対して`maiml-signer`スキルなど専用の
+    署名ツールで署名してください。
 - `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
   同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
   Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、

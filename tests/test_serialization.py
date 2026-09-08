@@ -357,26 +357,81 @@ def _minimal_root_with_signature(signature_xml):
     return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
 
 
-def test_signature_round_trips_without_duplicate_namespace_error():
-    """A <Signature> read back via loads() is re-serialized by lxml with
+def _minimal_root_with_encrypted_document_content():
+    """Build the smallest MaimlRootType whose document's content uses the
+    encryptionGroup (xs:choice) branch of GlobalObjectContent -- an
+    embedded, namespace-qualified XML fragment appended verbatim by
+    _write_encryption(), the same shape of hazard a document <Signature>
+    used to exercise here before dumps() stopped re-emitting signatures
+    entirely (see test_dumps_never_writes_a_signature below)."""
+    import maiml_domain as m
+
+    from pymaiml.builders import IdFactory, new_complete_event
+
+    ids = IdFactory()
+    vendor = m.VendorType(id=ids.new_id("vendor"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    owner = m.OwnerType(id=ids.new_id("owner"), content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    creator = m.CreatorType(id=ids.new_id("creator"),
+                             vendor_refs=[m.VendorRefType(id=ids.new_id("ref"), ref=vendor.id)],
+                             content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    encrypted_content = m.GlobalObjectContent(
+        encryption=m.EncryptionType(
+            encrypted_data=(
+                '<xenc:EncryptedData xmlns:xenc="http://www.w3.org/2001/04/xmlenc#">'
+                "<xenc:CipherData><xenc:CipherValue>AAAA</xenc:CipherValue></xenc:CipherData>"
+                "</xenc:EncryptedData>"
+            )
+        )
+    )
+    document = m.DocumentType(id=ids.new_id("doc"), date=dt.datetime.now(dt.timezone.utc),
+                               creators=[creator], vendors=[vendor], owners=[owner],
+                               content=encrypted_content)
+
+    place = m.PlaceType(id=ids.new_id("place"))
+    trans = m.TransitionType(id=ids.new_id("trans"))
+    arc = m.ArcType(id=ids.new_id("arc"), source=place.id, target=trans.id)
+    pnml = m.PnmlType(id=ids.new_id("pnml"), places=[place], transitions=[trans], arcs=[arc],
+                       content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    instr = m.InstructionType(id=ids.new_id("instr"),
+                               transition_refs=[m.TransitionRefType(id=ids.new_id("ref"), ref=trans.id)],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    program = m.ProgramType(id=ids.new_id("program"), instructions=[instr], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    method = m.MethodType(id=ids.new_id("method"), pnmls=[pnml], programs=[program], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    mt = m.MaterialTemplateType(id=ids.new_id("mt"), place_refs=[m.PlaceRefType(id=ids.new_id("ref"), ref=place.id)],
+                                 content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    protocol = m.ProtocolType(id=ids.new_id("protocol"), methods=[method], material_templates=[mt],
+                               content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    material = m.MaterialType(id=ids.new_id("material"), ref=mt.id, content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    results = m.ResultsType(id=ids.new_id("results"), materials=[material], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    data = m.DataType(id=ids.new_id("data"), results_list=[results], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    event = new_complete_event(ids.new_id("event"), instr.id, id_factory=ids)
+    trace = m.TraceType(id=ids.new_id("trace"), ref=program.id, events=[event], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    log = m.LogType(id=ids.new_id("log"), ref=method.id, traces=[trace], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+    event_log = m.EventLogType(id=ids.new_id("eventlog"), logs=[log], content=m.GlobalObjectContent(uuid=ids.new_uuid()))
+
+    return m.MaimlRootType(document=document, protocol=protocol, data=data, event_log=event_log)
+
+
+def test_encrypted_data_round_trips_without_duplicate_namespace_error():
+    """<EncryptedData> read back via loads() is re-serialized by lxml with
     every namespace declaration in scope baked into the fragment text
-    (including ones inherited from the root, unrelated to the signature
+    (including ones inherited from the root, unrelated to the fragment
     itself). Re-appending that text on the next dumps() call makes
     xml.etree.ElementTree auto-declare its own ns0/ns1/... prefix for the
-    namespace(s) actually used inside it -- and before the fix, that could
-    collide with the very same prefix loads() had reported back via
-    LoadedMaiml.namespaces (the documented load-modify-dump workflow),
-    producing two xmlns:ns0="..." attributes on the root <maiml> element
-    and: xml.parsers.expat.ExpatError: duplicate attribute."""
-    root = _minimal_root_with_signature(
-        '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
-        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
-        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
-    )
+    namespace(s) actually used inside it -- and before the fix (originally
+    caught via a document <Signature>, which exercised the exact same
+    _dedupe_root_namespace_decls() path), that could collide with the very
+    same prefix loads() had reported back via LoadedMaiml.namespaces (the
+    documented load-modify-dump workflow), producing two
+    xmlns:ns0="..." attributes on the root <maiml> element and:
+    xml.parsers.expat.ExpatError: duplicate attribute."""
+    root = _minimal_root_with_encrypted_document_content()
 
     xml1 = serialization.dumps(root)
     loaded = serialization.loads(xml1)
-    assert loaded.namespaces  # the xmldsig namespace was captured, as documented
+    assert loaded.namespaces  # the xmlenc namespace was captured, as documented
 
     # This is exactly the documented load-modify-dump workflow
     # (LoadedMaiml.namespaces docstring: "Pass this straight back as
@@ -565,79 +620,97 @@ def test_units_formatstring_scalefactor_on_a_class_that_accepts_them_still_work(
 
 
 # ---------------------------------------------------------------------------
-# Regression tests for dumps(drop_stale_signature=...): a signature is a
-# claim about the file's content at the moment it was computed, but dumps()
-# has no memory of what the content looked like at load time unless the
-# caller hands that back via the LoadedMaiml returned by loads(). These
-# tests exercise the mechanism end to end (kept-when-unchanged, dropped-
-# when-edited, and the ValueError for a hand-built LoadedMaiml that never
-# went through loads() and so has no snapshot to compare against).
+# Regression tests for dumps() unconditionally dropping document.signature.
+# Earlier versions had a drop_stale_signature= parameter that kept a
+# signature through dumps() when nothing besides the signature itself had
+# changed since load. That was removed: dumps() cannot guarantee any
+# serialization it produces is still a valid carrier for a pre-existing
+# enveloped signature (indentation/namespace-placement/attribute-ordering
+# differences alone can break a JIS X 5093 / ETSI TS 101 903 digest even
+# with zero content changes), so "detectably unchanged" is no longer
+# treated as grounds to keep the old signature. See dumps()'s docstring.
 # ---------------------------------------------------------------------------
 
-def _signed_minimal_root_and_loaded():
-    """Build a signed minimal root, dumps() it, and loads() it back --
-    the realistic starting point for a load-edit-dump workflow."""
+def _inject_signature_as_first_document_child(xml_text: str, document_id: str, signature_xml: str) -> str:
+    """Splice `signature_xml` in as the first child of <document id=...>
+    in `xml_text` -- simulates "this file was signed by some other,
+    JIS/XAdES-compliant tool", since dumps() itself never writes a
+    <document> Signature (see dumps()'s docstring) and so cannot be used
+    to produce such an input directly."""
+    marker = f'<document id="{document_id}">'
+    assert marker in xml_text, f"expected {marker!r} in dumps() output"
+    return xml_text.replace(marker, marker + signature_xml, 1)
+
+
+def test_dumps_never_writes_a_document_signature():
+    """The most basic guarantee: whatever document.signature holds,
+    dumps() output never contains a <Signature>, and the caller's own
+    object is left untouched -- dumps() decides what to WRITE, it does not
+    mutate document.signature behind the caller's back."""
     root = _minimal_root_with_signature(
         '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
         "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
         "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
     )
-    xml1 = serialization.dumps(root)
-    return serialization.loads(xml1)
+
+    xml_text = serialization.dumps(root)
+
+    assert "Signature" not in xml_text
+    assert root.document.signature is not None
 
 
-def test_drop_stale_signature_keeps_signature_when_nothing_changed():
-    loaded = _signed_minimal_root_and_loaded()
+def test_loads_still_reads_a_signature_dumps_never_wrote():
+    """loads() must still parse and expose an existing <Signature> (e.g.
+    to hand to an external verifier) even though dumps() itself never
+    emits one -- pymaiml can read a signed file, it just makes no claim
+    about being able to reproduce a still-valid one on the way back out."""
+    root = _minimal_root_with_signature(None)
+    xml_without_signature = serialization.dumps(root)
+    assert "Signature" not in xml_without_signature
 
-    xml2 = serialization.dumps(
-        loaded.root,
-        extra_namespaces=loaded.namespaces,
-        drop_stale_signature=loaded,
+    signature_xml = (
+        '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
+        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
     )
-    assert "Signature" in xml2
-
-
-def test_drop_stale_signature_drops_signature_when_content_edited():
-    loaded = _signed_minimal_root_and_loaded()
-
-    # Edit something unrelated to the signature itself.
-    loaded.root.document.date = loaded.root.document.date.replace(year=2030)
-
-    xml2 = serialization.dumps(
-        loaded.root,
-        extra_namespaces=loaded.namespaces,
-        drop_stale_signature=loaded,
+    xml_signed_elsewhere = _inject_signature_as_first_document_child(
+        xml_without_signature, root.document.id, signature_xml
     )
-    assert "Signature" not in xml2
-    # ...and the caller's own object is left untouched -- dumps() decides
-    # what to WRITE, it does not mutate document.signature behind the
-    # caller's back.
+
+    loaded = serialization.loads(xml_signed_elsewhere)
     assert loaded.root.document.signature is not None
+    assert "SignatureValue" in loaded.root.document.signature
 
 
-def test_drop_stale_signature_without_edits_matches_plain_dumps():
-    """Sanity check: when nothing changed, drop_stale_signature=loaded must
-    produce the exact same output as a plain dumps() call -- the parameter
-    should be a pure no-op in the unchanged case."""
-    loaded = _signed_minimal_root_and_loaded()
-
-    xml_plain = serialization.dumps(loaded.root, extra_namespaces=loaded.namespaces)
-    xml_guarded = serialization.dumps(
-        loaded.root, extra_namespaces=loaded.namespaces, drop_stale_signature=loaded,
-    )
-    assert xml_plain == xml_guarded
-
-
-def test_drop_stale_signature_requires_a_snapshot_from_loads():
-    """A LoadedMaiml built by hand (not returned by loads()) has no
-    load-time snapshot to compare against -- must fail clearly rather than
-    silently skip the check or crash with an unrelated AttributeError."""
-    root = _minimal_root_with_signature(
+def test_dumps_drops_a_loaded_signature_even_with_no_further_edits():
+    """The specific case the old drop_stale_signature= mechanism used to
+    treat as safe to keep (load a signed file, change nothing, dump again)
+    must now drop the signature too -- "nothing else changed" was never a
+    guarantee that dumps()'s own formatting reproduces the exact byte form
+    the signature's digest was computed over."""
+    root = _minimal_root_with_signature(None)
+    xml_without_signature = serialization.dumps(root)
+    signature_xml = (
         '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
-        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
-        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
+        "<ds:SignedInfo><ds:DigestValue>CCCC</ds:DigestValue></ds:SignedInfo>"
+        "<ds:SignatureValue>DDDD</ds:SignatureValue></ds:Signature>"
     )
-    hand_built = serialization.LoadedMaiml(root=root)
+    xml_signed_elsewhere = _inject_signature_as_first_document_child(
+        xml_without_signature, root.document.id, signature_xml
+    )
+    loaded = serialization.loads(xml_signed_elsewhere)
+    assert loaded.root.document.signature is not None  # loads() did read it
 
-    with pytest.raises(ValueError, match="requires the LoadedMaiml returned by"):
-        serialization.dumps(root, drop_stale_signature=hand_built)
+    # No edits at all since load -- yet dumps() must still drop it.
+    xml2 = serialization.dumps(loaded.root, extra_namespaces=loaded.namespaces)
+    assert "Signature" not in xml2
+    assert loaded.root.document.signature is not None  # caller's object untouched
+
+
+def test_dumps_no_longer_accepts_drop_stale_signature():
+    """drop_stale_signature= was removed outright, not just defaulted to a
+    no-op -- passing it must fail loudly (TypeError: unexpected keyword
+    argument) rather than being silently ignored."""
+    root = _minimal_root_with_signature(None)
+    with pytest.raises(TypeError):
+        serialization.dumps(root, drop_stale_signature=object())
