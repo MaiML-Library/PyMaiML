@@ -31,12 +31,12 @@ pip install -e ".[dev]"
 
 `pyproject.toml`の`dependencies`に`maiml-domain`がGit経由の依存として
 指定されているため、`pip install`時に自動的に
-`https://github.com/MaiML-Library/MaiML-Domain.git`の`v0.1.0`タグから
+`https://github.com/MaiML-Library/MaiML-Domain.git`の`v0.2.0`タグから
 インストールされます。
 
 ```toml
 dependencies = [
-    "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.1.0",
+    "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.2.0",
 ]
 ```
 
@@ -44,7 +44,7 @@ dependencies = [
 
 MaiML-Domainを`main`ブランチのまま参照すると、Domain側の将来の変更
 (仕様追加・破壊的変更含む)がこちらに無断で流れ込んでしまいます。
-バージョンタグ(`v0.1.0`など)に固定し、Domain側を更新したいときに明示的に
+バージョンタグ(`v0.2.0`など)に固定し、Domain側を更新したいときに明示的に
 このバージョン指定を上げる、という運用にしてください。Domain側の
 `CHANGELOG.md`と合わせて確認すると、何が変わったか追跡しやすくなります。
 
@@ -55,10 +55,10 @@ Domain側とSDK側を手元で同時に編集しながら動かしたい場合�
 
 **`pip install -e ../MaiML-Domain`の後に`pip install -e ".[dev]"`を続けて
 実行しないでください。** `dependencies`の
-`maiml-domain @ git+...@v0.1.0`はdirect URL指定であり、pipは既存の
+`maiml-domain @ git+...@v0.2.0`はdirect URL指定であり、pipは既存の
 editableインストールで要件が満たされているとは判断しません。そのため
 2つ目のコマンドが1つ目で入れたeditable版を**エラーを出さずに**
-アンインストールし、gitタグ`v0.1.0`から取得した固定版に静かに差し替えて
+アンインストールし、gitタグ`v0.2.0`から取得した固定版に静かに差し替えて
 しまいます(Domain側を編集しても反映されない状態に陥り、気づきにくい
 のが厄介な点です)。代わりに`--no-deps`を使い、依存(`lxml`/`pytest`)は
 個別にインストールしてください。
