@@ -397,6 +397,51 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   消失には留まらない。コメントが「データの一部を意図的に省略している」
   といった、それ自体が意味を持つ情報を担っている場合、その情報ごと
   失われる点を明示的に注意喚起する。ユーザー指摘。
+- **`pymaiml.query`モジュールを新設。** `serialization`/`validation`/
+  `builders`とは独立した、読み取り専用の「ファイル内の一覧を取得する」
+  ユーティリティ群として、以下4関数を提供します。
+  - `get_uuids(xml_text)` -- `<uuid>`要素のテキストを一覧取得
+    (出現箇所の種類を問わない: オブジェクトの識別uuid、`insertion`
+    自身のuuid、`chain`/`parent`のuuidをすべて含む)
+  - `get_keys(xml_text)` -- `key=`属性値を一覧取得
+    (`<property>`/`<content>`/`<chain>`/`<parent>`のいずれも対象)
+  - `get_namespaces(xml_text)` -- 宣言されているカスタム名前空間を
+    `{接頭辞: URI}`の`dict`で取得(デフォルト名前空間と`xsi:`は除外)
+  - `get_insertion_uris(xml_text)` -- `<insertion>/<uri>`のテキストを
+    一覧取得(外部ファイル参照のURI)
+
+  リスト系の3関数はいずれも出現順を保持しつつ重複を除去します
+  (`dict.fromkeys()`による先頭優先の重複除去)。`get_namespaces()`は
+  `dict`を返すため、キーの挿入順がそのまま出現順になります。
+
+  設計上の要点は次のとおりです。
+  - `pymaiml.serialization.loads()`を経由しません。`loads()`はスキーマ
+    妥当な入力のみを対象とし、`maiml_domain`オブジェクトツリーの構築を
+    要求しますが、`pymaiml.query`は生のXMLを直接(`lxml.etree`の
+    `.iter()`による汎用的なタグ名/属性名の走査で)読むため、まだ
+    スキーマ検証していないファイルに対する軽量な下調べとしても使えます。
+  - `get_namespaces()`は、`LoadedMaiml.namespaces`(ルート`<maiml>`要素
+    のみを見る)とは異なり、木全体を走査します。`pymaiml`自身の
+    `dumps()`出力であれば`xml.etree.ElementTree`のシリアライザが
+    使用中の名前空間をすべてルートへ引き上げるため`LoadedMaiml.
+    namespaces`でも十分ですが、`pymaiml`の`dumps()`を経由していない
+    外部生成ファイル(例: ルート以外の要素で`xmlns:ds`を宣言したまま
+    署名されたファイル -- `dumps()`は署名を書き出さないため、
+    署名付きファイルは必然的に外部由来です)では、名前空間がルート以外
+    の要素に宣言されている可能性があり、`get_namespaces()`はそのケースも
+    正しく検出します。同じ接頭辞に異なるURIが束縛されている場合は
+    `ValueError`を送出します(`_dedupe_root_namespace_decls()`の
+    「サイレントに片方を選ばず失敗する」という既存方針を踏襲)。
+  - 4関数とも、`pymaiml.serialization.loads()`と同じ
+    `pymaiml._xml_security.make_untrusted_input_parser()`(XXE/
+    entity-expansion/networkハードニング済み)でXMLを解析します。
+    「このファイルに何が入っているか一覧を取る」という用途は、
+    未検証・未信頼な入力に対してまさに使われがちな操作であるため。
+
+  `pymaiml/__init__.py`のモジュール概要とREADME.mdの「モジュール構成」に
+  追記し、`tests/test_query.py`(13件、上記の重複除去・走査範囲・
+  エラー送出・XXEハードニングをそれぞれ検証)を追加しました。
+  ユーザー要望・設計指定。
 
 ## [0.1.0] - 未リリース
 

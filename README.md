@@ -255,6 +255,41 @@ pip install --no-deps -e .
   > 外れます)。
   >
 
+- `pymaiml.query` -- ファイル内の「一覧」を取得する、独立した読み取り専用
+  ユーティリティ群です。`serialization.loads()`を経由しない(=スキーマ
+  妥当性を要求しない、`maiml_domain`オブジェクトツリーも構築しない)ため、
+  まだ検証していないファイルに対する軽量な下調べとしても使えます。
+
+  ```python
+  from pymaiml import query
+
+  xml_text = open("sample.maiml", "rb").read()
+  query.get_uuids(xml_text)           # -> List[str]  (<uuid>要素のテキスト)
+  query.get_keys(xml_text)            # -> List[str]  (key=属性値)
+  query.get_namespaces(xml_text)      # -> Dict[str, str]  ({接頭辞: URI})
+  query.get_insertion_uris(xml_text)  # -> List[str]  (<insertion>/<uri>のテキスト)
+  ```
+
+  4関数とも出現順を保持しつつ重複を除去した結果を返します(`get_namespaces`
+  は`dict`なので、キーの挿入順がそのまま出現順になります)。`get_uuids()`は
+  `<uuid>`という要素名が使われる箇所すべて(オブジェクトの識別uuid・
+  `insertion`自身のuuid・`chain`/`parent`のuuid)を区別せず一括で拾い、
+  `get_keys()`も同様に`<property>`/`<content>`/`<chain>`/`<parent>`の
+  `key`属性をまとめて拾います。`get_namespaces()`は
+  `LoadedMaiml.namespaces`(ルート`<maiml>`要素のみ走査)とは異なり木全体を
+  走査するため、`pymaiml`の`dumps()`を経由していない外部生成ファイル
+  (例: ルート以外の要素に`xmlns:ds`を宣言したまま署名されたファイル)でも
+  正しく名前空間を検出できます。同じ接頭辞に異なるURIが束縛されている
+  場合は`ValueError`を送出します。`get_insertion_uris()`が返すURIは、
+  `<insertion>`要素の`<uri>`子要素のテキストです(`insertion*`の詳細は
+  `maiml-data-merger`スキルの「INSERTION attachment」も参照)。
+
+  4関数とも、`pymaiml.serialization.loads()`と同じ
+  (`pymaiml._xml_security.make_untrusted_input_parser()`による)XXE/
+  entity-expansion/networkハードニング済みのパーサーで解析します。
+  「このファイルに何が入っているか一覧を取る」という用途は、未検証・
+  未信頼な入力に対してまさに使われがちな操作のためです。
+
 ## テスト
 
 ```bash

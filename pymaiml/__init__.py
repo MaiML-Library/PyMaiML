@@ -8,7 +8,7 @@ git tag, not to a floating branch -- see README.md for why).
 
 maiml_domain intentionally contains zero business-rule validation and no
 XML (de)serialization -- see its own README for the rationale. Those
-concerns live here, in the SDK layer, split across three modules:
+concerns live here, in the SDK layer, split across four modules:
 
   pymaiml.serialization
       Convert maiml_domain object trees to/from real MaiML XML: dumps/dump
@@ -27,6 +27,12 @@ concerns live here, in the SDK layer, split across three modules:
       lifecycle:transition="complete" event that validation's EVT-02 rule
       requires whenever <data> records a measurement (new_complete_event).
 
+  pymaiml.query
+      Independent, read-only "list the X used in this file" utilities
+      that work directly on the XML (not via serialization.loads(), so
+      they don't require the file to be schema-valid first): every
+      get_uuids(), get_keys(), get_namespaces(), get_insertion_uris().
+
 Typical usage:
 
     import maiml_domain as m
@@ -42,8 +48,8 @@ from __future__ import annotations
 
 import maiml_domain  # noqa: F401  -- proves the dependency wiring works
 
-from . import builders, serialization, validation  # noqa: F401,E402
+from . import builders, query, serialization, validation  # noqa: F401,E402
 
 __version__ = "0.1.0"
 
-__all__ = ["__version__", "serialization", "validation", "builders"]
+__all__ = ["__version__", "serialization", "validation", "builders", "query"]
