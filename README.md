@@ -163,6 +163,17 @@ pip install --no-deps -e .
     署名済みファイルが必要な場合は、`dumps()`/`dump()`で内容を確定させた
     「後で」、その出力バイト列に対して`maiml-signer`スキルなど専用の
     署名ツールで署名してください。
+  - `loads()`は対象のXSD要素だけを明示的に拾ってDomainオブジェクトへ
+    変換する設計であり、XMLコメント(`<!-- ... -->`)や処理命令
+    (`<?...?>`)はモデル化していません。そのため`loads()`→`dumps()`で
+    往復させると、元のファイルに含まれていたコメント・処理命令は
+    失われます(XMLとして完全にlosslessなround-tripは保証していません)。
+    これは単なる開発者向けメモの消失に留まりません。コメントが
+    「データの一部を意図的に省略している」といった、それ自体が
+    意味を持つ情報を担っている場合、その情報ごと失われる点に
+    注意してください
+    (XML comments and processing instructions are not preserved by
+    load/dump round trips)。
 - `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
   同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
   Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、

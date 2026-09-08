@@ -385,6 +385,19 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   で検証する`test_encrypted_data_round_trips_without_duplicate_
   namespace_error`に置き換えました。ユーザー指摘・提案。
 
+### Added
+- README.md(`pymaiml.serialization`節)と`pymaiml/serialization.py`の
+  モジュールdocstring(Known limitations)に、XMLコメント
+  (`<!-- ... -->`)・処理命令(`<?...?>`)がload/dumpの往復で保持されない
+  ことを明記。現在の`loads()`は対象のXSD要素だけを明示的に拾って
+  `maiml_domain`オブジェクトへ変換する設計で、コメント・処理命令は
+  そもそもモデル化していないため、`loads()`→`dumps()`で往復させると
+  元のファイルにあったコメント・処理命令は失われる(XMLとして完全に
+  losslessなround-tripは保証しない)。これは単なる開発者向けメモの
+  消失には留まらない。コメントが「データの一部を意図的に省略している」
+  といった、それ自体が意味を持つ情報を担っている場合、その情報ごと
+  失われる点を明示的に注意喚起する。ユーザー指摘。
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

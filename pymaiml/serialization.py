@@ -52,6 +52,14 @@ Known limitations (documented rather than silently guessed at):
     docstring for why. If you need a signed output, sign the bytes dumps()
     produces with a dedicated tool (e.g. the maiml-signer skill), after
     dumping, not before.
+  - loads() picks out only the specific XSD elements/attributes it knows
+    about; it does not model XML comments or processing instructions at
+    all. A load()/dump() round trip therefore silently drops any comments
+    or processing instructions the original file had -- this is not a
+    lossless-XML-round-trip guarantee, and a comment can carry meaningful
+    information (e.g. "this field was intentionally left blank"), not
+    just a developer note, so this loss is worth calling out explicitly
+    rather than treating it as an obvious side effect of pretty-printing.
 """
 from __future__ import annotations
 
