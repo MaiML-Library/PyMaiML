@@ -162,6 +162,43 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `test_absent_insertion_format_still_round_trips_as_none`)。
   いずれも外部レビュー(2026-09-07、PyMaiML `690edd6`/MaiML-Domain
   `be11e5c`時点)で報告された「要修正」所見3件の再現コードに基づく。
+- `pymaiml.serialization`: `units`/`formatString`/`scaleFactor`属性を
+  持つ`<property>`/`<content>`を`loads()`する際、書き込み側は
+  `hasattr(obj, "units")`等で対応クラスかどうかを確認しているのに対し、
+  読み込み側は無条件に`kwargs`へ積んでいたため、対応しないxsi:type
+  (例:`stringType`に`units`)だと生の`TypeError`(`__init__() got an
+  unexpected keyword argument 'units'`)がそのまま呼び出し側に漏れて
+  いた不具合を修正。`_read_property_or_content()`で
+  `inspect.signature(cls.__init__).parameters`を使って対象クラスが
+  そのパラメータを受け付けるか事前に確認し、受け付けない場合は
+  `pymaiml.validation.validate()`の利用を促す分かりやすい`ValueError`
+  を送出するようにした。回帰防止テストを2件追加
+  (`test_units_on_a_class_that_does_not_accept_it_raises_a_clear_error`、
+  `test_units_formatstring_scalefactor_on_a_class_that_accepts_them_still_work`)。
+
+### Changed
+- README.md: `pymaiml.serialization`の節に既知の制限を2点追記。
+  (1) `loads()`はスキーマ妥当な入力のみを対象としており、基数
+  (`minOccurs`)違反のファイルは`maiml_domain`側の`ValueError`で読み込みが
+  止まるため、診断・修復用途には`pymaiml.validation.validate()`を先に
+  使うべきこと。(2) `document`に`Signature`を持つファイルを`loads()`→
+  `dumps()`で往復させると`dumps()`のpretty-print整形により署名対象の
+  バイト列が変わり、他の準拠実装が付与した署名は無効化されること
+  (`pymaiml`自身が書いた署名を読み直す場合はC14N出力が一致するため
+  影響を受けない)。
+- README.md: `pymaiml.validation`の節に、同梱XSD(`pymaiml/schema/
+  MaiML-Schema-1_0/`)のうち5本(`maiml.xsd`/`maiml-core.xsd`/
+  `maiml-document.xsd`/`maiml-property.xsd`/`xenc-schema.xsd`)が公式
+  配布版に無い`xs:import`(`xmldsig`/`xmlenc`名前空間)を追記した改変版
+  であることを明記。公式配布版はこれらのimportを欠いておりlxmlで
+  スキーマオブジェクトを構築できないための実務的な補完であることと、
+  `maiml-schema-validator`スキルの`reference/`側にも同じ差分を適用した
+  コピーを保持していることを併記。
+  以上4件は外部レビュー(2026-09-07、PyMaiML `690edd6`/MaiML-Domain
+  `be11e5c`時点)の「要検討」所見のうち、コード修正が妥当と判断した
+  1件(units/formatString/scaleFactor)と、設計上の割り切りとして
+  ドキュメント化に留めるのが妥当と判断した3件(署名の再整形、
+  loads()の対象範囲、同梱XSDの差分)への対応。
 
 ## [0.1.0] - 未リリース
 

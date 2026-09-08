@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import inspect
 import re
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -733,11 +734,29 @@ def _read_property_or_content(el):
             kwargs["id"] = el.get("id")
         if el.get("ref") is not None:
             kwargs["ref"] = el.get("ref")
+    init_params = inspect.signature(cls.__init__).parameters
+
+    def _require_param(param_name: str, xml_attr: str) -> None:
+        if param_name in init_params:
+            return
+        raise ValueError(
+            f"<property>/<content> key={key!r} xsi:type={xsi_type!r} has a "
+            f"{xml_attr!r} attribute, but {cls.__name__} does not accept a "
+            f"{param_name!r} value -- units/formatString/scaleFactor only "
+            "apply to numeric property/content types. This file is not "
+            "MaiML-Schema-1_0 valid; run pymaiml.validation.validate() on "
+            "it to see every such error at once instead of stopping at the "
+            "first one loads() happens to reach."
+        )
+
     if el.get("formatString") is not None:
+        _require_param("format_string", "formatString")
         kwargs["format_string"] = el.get("formatString")
     if el.get("units") is not None:
+        _require_param("units", "units")
         kwargs["units"] = el.get("units")
     if el.get("scaleFactor") is not None:
+        _require_param("scale_factor", "scaleFactor")
         raw = el.get("scaleFactor")
         try:
             kwargs["scale_factor"] = int(raw)

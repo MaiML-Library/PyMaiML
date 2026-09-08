@@ -518,3 +518,46 @@ def test_absent_insertion_format_still_round_trips_as_none():
 
     loaded = serialization.loads(serialization.dumps(root))
     assert _find_insertion(loaded.root).format is None
+
+
+
+# ---------------------------------------------------------------------------
+# Regression test for the external review's "worth considering" finding 05
+# (2026-09-07): units/formatString/scaleFactor are only valid on numeric
+# property/content classes, but loads() used to pass them through
+# unconditionally and let a raw TypeError from the domain class's __init__
+# reach the caller.
+# ---------------------------------------------------------------------------
+
+def test_units_on_a_class_that_does_not_accept_it_raises_a_clear_error():
+    """stringType has no `units` parameter (only numeric xsi:types do), so
+    a file that puts units="..." on one is not MaiML-Schema-1_0 valid.
+    Before the fix, this reached the caller as a raw
+    `TypeError: _ScalarPropertyBase.__init__() got an unexpected keyword
+    argument 'units'`; it must now be a clear, MaiML-specific ValueError
+    instead."""
+    import xml.etree.ElementTree as ET
+
+    el = ET.fromstring(
+        '<property xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'key="ex:k" xsi:type="stringType" units="Pa"><value>x</value></property>'
+    )
+    with pytest.raises(ValueError, match="does not accept a 'units' value"):
+        serialization._read_property_or_content(el)
+
+
+def test_units_formatstring_scalefactor_on_a_class_that_accepts_them_still_work():
+    """Companion to the test above: the guard must not reject the normal,
+    valid case (a numeric xsi:type that does accept these attributes)."""
+    import xml.etree.ElementTree as ET
+
+    el = ET.fromstring(
+        '<property xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" '
+        'key="ex:k" xsi:type="floatType" units="Pa" formatString="0.00" '
+        'scaleFactor="2"><value>1.5</value></property>'
+    )
+    prop = serialization._read_property_or_content(el)
+    assert prop.units == "Pa"
+    assert prop.format_string == "0.00"
+    assert prop.scale_factor == 2
+    assert prop.value == 1.5

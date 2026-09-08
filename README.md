@@ -119,6 +119,25 @@ pip install --no-deps -e .
   serialization.dump(full_root, "measured.maiml", extra_namespaces=loaded.namespaces)
   ```
 
+  **既知の制限:**
+  - `loads()`はスキーマ妥当な入力のみを対象としています。必須要素が
+    欠けたファイルは`maiml_domain`の各クラスがコンストラクタで基数
+    (`minOccurs`)を検証する設計のため、その場で`ValueError`が発生して
+    読み込みが止まります。壊れたファイルをオブジェクトとして開いて
+    中身を調べたり、プログラムで修復したりする用途には現状対応して
+    いません。ファイルの妥当性が不明な場合は、先に
+    `pymaiml.validation.validate()`でエラー箇所を(1件ずつではなく)
+    まとめて特定してください。
+  - `document`に`Signature`(XML電子署名)を持つファイルを`loads()`→
+    `dumps()`で往復させると、`dumps()`が`xml.dom.minidom`で全体を
+    pretty-print整形し直すため、署名対象バイト列(enveloped変換後の
+    C14N出力)が変わり、他の準拠実装が付与した署名は無効になります。
+    `pymaiml`自身が書き出した署名を読み直す場合はC14N出力が一致する
+    ため無効化されませんが、外部で署名されたファイルを`loads()`→
+    `dumps()`で往復させる用途(署名を保ったままの部分更新)には現状
+    対応していません。そのような更新が必要な場合は、原文のバイト列に
+    対して直接パッチを当ててください。
+
 - `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
   同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
   Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、
@@ -128,6 +147,18 @@ pip install --no-deps -e .
   result = validate("sample.maiml")
   assert result.ok, result  # result.errors / .warnings / .info も参照可
   ```
+
+  > **注意: 同梱のXSDは公式配布版そのものではありません。**
+  > `pymaiml/schema/MaiML-Schema-1_0/`のうち`maiml.xsd`/`maiml-core.xsd`/
+  > `maiml-document.xsd`/`maiml-property.xsd`/`xenc-schema.xsd`の5本
+  > (他13本中)には、公式配布版には無い`xs:import`(`xmldsig`/`xmlenc`
+  > 名前空間)を追記しています。公式配布版はこれらのimportを欠いており、
+  > そのままではlxmlでスキーマオブジェクトを構築できないための実務的な
+  > 補完です。`<Signature>`/`<EncryptedData>`の内部構造まで検証する
+  > ために必要な変更なので、公式配布版で上書きしないでください。
+  > `maiml-schema-validator`スキルの`reference/MaiML-Schema-1_0/`にも
+  > 同じ差分を適用した同一内容のコピーを保持しています(CONTRIBUTING.md
+  > 参照)。
 - `pymaiml.builders` -- オブジェクトツリーを手で組み立てる際の定型作業を
   減らすヘルパー群。`IdFactory`(id/uuidの重複しない採番。
   `reserve()`/`from_existing_ids()`で既存ファイル読み込み後のid衝突を
