@@ -118,6 +118,18 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `test_drop_stale_signature_drops_signature_when_content_edited`、
   `test_drop_stale_signature_without_edits_matches_plain_dumps`、
   `test_drop_stale_signature_requires_a_snapshot_from_loads`)。
+- `tests/test_xsd_completeness.py`を追加。MaiML-Schema-1_0(`pymaiml/schema/`
+  同梱版)を正として、(1)全`<xs:complexType>`が同名(先頭大文字化)の
+  `maiml_domain`クラスを持つか、(2)`maiml-property.xsd`の全property/
+  content xsi:type(`propertyBaseType`/`contentBaseType`を直接継承する
+  complexType)が`pymaiml._xsi_registry`に登録されているか、をそれぞれ
+  双方向(過不足なし)でチェックする。「XSDが更新されたのに、対応する
+  クラスをMaiML-Domain側に追加し忘れる」ケースをCIで検出できるようにする
+  ためのテスト。`maiml_domain`側のシンプル型(`Uuid`等)・xs:group由来の
+  mixin(`GlobalObjectContent`/`EncryptionType`)・実装詳細
+  (`_StrictAttributesMixin`)は、XSDのcomplexTypeに対応しないことが既知の
+  例外として明示的に許容リスト化してある。現時点(MaiML-Domain `v0.2.0`)
+  では過不足なし(5件すべて合格)。
 
 ### Fixed
 - `pymaiml.serialization`: `<uncertainty>`要素が書き込み・読み込みの両方で
