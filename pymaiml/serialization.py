@@ -66,6 +66,7 @@ from lxml import etree as _lxml_etree
 
 import maiml_domain as m
 
+from ._xml_security import make_untrusted_input_parser
 from ._xsi_registry import class_for_xsi_type, is_content_class, is_list_shaped, xsi_type_for
 
 MAIML_NS = "http://www.maiml.org/schemas"
@@ -1226,9 +1227,19 @@ class LoadedMaiml:
 
 
 def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
-    """Parse MaiML XML text (or bytes) into a LoadedMaiml."""
+    """
+    Parse MaiML XML text (or bytes) into a LoadedMaiml.
+
+    xml_text is treated as untrusted input -- it may be a local file's
+    contents today, but this is also the entry point a future API/upload
+    surface would call directly, without necessarily running it through
+    pymaiml.validation.validate() first. Parsing therefore explicitly
+    disables external entity resolution and network access (see
+    pymaiml._xml_security.make_untrusted_input_parser()) rather than
+    relying on lxml's current defaults.
+    """
     data = xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text
-    root_el = _lxml_etree.fromstring(data)
+    root_el = _lxml_etree.fromstring(data, parser=make_untrusted_input_parser())
 
     xsi_type = root_el.get(f"{{{XSI_NS}}}type")
     namespaces = {

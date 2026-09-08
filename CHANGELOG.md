@@ -285,6 +285,50 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   (2) `dependencies`をバージョン範囲指定へ書き換え、(3) `pymaiml`自体を
   PyPI公開、という順序を明文化した。外部レビューで報告された所見。
 
+### Security
+- 信頼できない(未検証の)MaiML XMLを解析するlxmlパーサーに
+  `resolve_entities=False`と`no_network=True`を明示するハードニングを
+  実施(新モジュール`pymaiml._xml_security.make_untrusted_input_parser()`)。
+  従来`pymaiml.validation._xsd_validate()`は`etree.XMLParser(remove_blank_
+  text=False)`のみで、lxmlの既定値(`resolve_entities=True`、
+  `no_network=False`)に依存していたため、DOCTYPEで宣言した外部
+  エンティティ(例: `<!ENTITY xxe SYSTEM "file:///etc/passwd">`)や
+  ネットワーク越しの外部リソース参照が解決されうる状態だった(いわゆる
+  XXE/entity-expansion脆弱性)。現状`validate()`はローカルファイルしか
+  扱わないためすぐに悪用可能というわけではないが、`pymaiml.validation`
+  が将来APIやアップロードファイルなど未検証の入力を扱う可能性を見込み、
+  「このライブラリは外部エンティティ・ネットワークリソースを一切解決
+  しない」という方針をコードで明示的に固定した。同様に未検証入力を
+  読む`pymaiml.serialization.loads()`(`_lxml_etree.fromstring(data)`、
+  従来パーサー未指定=lxml既定値)も同じ`make_untrusted_input_parser()`を
+  使うよう変更。
+- 一方、同梱の信頼済みXSDスキーマ本体を読み込む
+  `pymaiml.validation._load_schema()`(`etree.parse(str(maiml_xsd))`)は
+  意図的に上記のハードニング済みパーサーを共有せず、従来どおりの
+  パーサーのまま維持した。こちらはスキーマファイル間の`xs:import`/
+  `xs:include`(ローカルファイルパスによる相互参照)を解決する必要が
+  あり、未検証のMaiML入力とは信頼レベルが異なるため。両者を意図的に
+  別々の、名前の付いたコード経路として分離しておくことで、一方への
+  変更がもう一方へ静かに波及することを防ぐ設計とした。
+- 上記の変更に伴い、`pymaiml.validation._xsd_validate()`で
+  `schema.validate(doc)`が`lxml.etree.XMLSchemaValidateError`
+  (internal error)を送出するケースを新たに捕捉するよう修正。
+  `resolve_entities=False`により未解決のまま残ったDOCTYPE由来の
+  エンティティ参照ノードを含む木は、libxml2のスキーマバリデータが
+  正常に走査できず内部エラー例外を送出することがある(実際に
+  回帰テストで発生を確認)。これを捕捉せずに伝播させると
+  `validate()`が例外で落ちてしまうため、通常のXSD違反と同様に
+  `Finding(code="XSD-02")`として報告するよう変更した。
+- 回帰テスト`tests/test_xml_security.py`を追加。ハードニング済み
+  パーサーが外部ファイルエンティティを展開しないこと・ネットワーク
+  リソースへアクセスしようとしないことを直接確認するテスト、
+  `validate()`/`loads()`がそのような入力に対して例外を送出したり
+  秘匿情報をエラーメッセージ経由で漏らしたりしないことを確認する
+  テスト、通常の正当なMaiMLファイルの読み込み・検証がハードニング後も
+  引き続き成功することを確認するテスト、`_load_schema()`が引き続き
+  ローカルXSD間の`xs:import`/`xs:include`を解決できることを確認する
+  テストを含む。ユーザー提案。
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

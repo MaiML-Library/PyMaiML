@@ -57,6 +57,8 @@ except ImportError as exc:  # pragma: no cover
         "pip install lxml"
     ) from exc
 
+from ._xml_security import make_untrusted_input_parser
+
 __all__ = ["Finding", "ValidationResult", "validate"]
 
 _BUNDLED_SCHEMA_DIR = Path(__file__).resolve().parent / "schema" / "MaiML-Schema-1_0"
@@ -189,6 +191,25 @@ class ValidationResult:
 
 
 def _load_schema(schema_dir: Path):
+    """
+    Compile maiml.xsd -- and everything it <xs:import>s/<xs:include>s from
+    the same schema_dir -- into an lxml XMLSchema.
+
+    schema_dir is always either the bundled, trusted copy under
+    pymaiml/schema/MaiML-Schema-1_0/, or an explicit schema_dir= a caller
+    passed in to validate against a different schema *version*; it is
+    never untrusted end-user MaiML content. This function deliberately
+    does NOT go through _xml_security.make_untrusted_input_parser(): schema
+    compilation needs ordinary local-file <xs:import>/<xs:include>
+    resolution between the *.xsd files in schema_dir, which is expected,
+    routine behaviour for a schema bundle -- not something to lock down
+    the way arbitrary MaiML input is locked down in _xsd_validate() below.
+    (no_network=True would not even conflict with this -- xs:import/
+    xs:include here use relative filesystem paths, not network URLs -- but
+    the two parser configurations are kept as separate, independently
+    named code paths on purpose, so that hardening or loosening one can
+    never silently affect the other.)
+    """
     maiml_xsd = schema_dir / "maiml.xsd"
     if not maiml_xsd.is_file():
         raise FileNotFoundError(f"maiml.xsd not found under {schema_dir}")
@@ -229,14 +250,36 @@ def _check_encoding_declaration(xml_bytes: bytes, findings: List[Finding]) -> No
 
 
 def _xsd_validate(xml_bytes: bytes, schema, findings: List[Finding]):
-    parser = etree.XMLParser(remove_blank_text=False)
+    # xml_bytes is untrusted MaiML input (a local file today; potentially an
+    # uploaded file or an API request body in the future) -- see
+    # _xml_security.make_untrusted_input_parser() for why resolve_entities/
+    # no_network are pinned explicitly here, and _load_schema() above for
+    # why the *schema* is compiled with a separate, unhardened parser.
+    parser = make_untrusted_input_parser(remove_blank_text=False)
     try:
         doc = etree.fromstring(xml_bytes, parser=parser)
     except etree.XMLSyntaxError as e:
         findings.append(Finding("error", "XML-01", f"XMLとして整形式ではありません: {e}", line=e.lineno))
         return None
     tree = doc.getroottree()
-    if not schema.validate(doc):
+    try:
+        is_valid = schema.validate(doc)
+    except etree.XMLSchemaValidateError as e:
+        # A DOCTYPE-declared entity reference that resolve_entities=False
+        # deliberately left unresolved (see _xml_security) can leave an
+        # Entity node inside the tree that libxml2's schema validator
+        # cannot walk -- it reports that as an "internal error" exception
+        # instead of a normal validation failure. Treat it as just another
+        # XSD violation rather than letting it escape as an uncaught
+        # exception; either way the input is rejected.
+        findings.append(Finding(
+            "error", "XSD-02",
+            "スキーマ検証中にエラーが発生しました。DOCTYPEで宣言されたエンティティ参照が"
+            f"解決されないまま残っている可能性があります(このライブラリは外部エンティティ"
+            f"を解決しません): {e}",
+        ))
+        return tree
+    if not is_valid:
         for err in schema.error_log:
             findings.append(Finding("error", "XSD-01", err.message, line=err.line))
     return tree
