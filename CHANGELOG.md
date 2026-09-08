@@ -91,6 +91,33 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   読み込んで新規data/eventLogを追加し、スキーマ検証まで通す」ユースケース、
   および「protocol側の値なしプレースホルダーと対応するdata側の実測値が
   同じxsi:typeになる」ことをend-to-endで検証するテストを含む。
+- `pymaiml.serialization.dumps()`に`drop_stale_signature=`引数を追加。
+  `document.signature`は`loads()`/`dumps()`がただの1フィールドとして機械的
+  に往復させるだけの生XML文字列であり、`data`/`protocol`など他の部分が
+  編集されたかどうかは一切関知しない。そのため「ロード→編集→出力」の
+  ワークフローで、編集後に`document.signature`を明示的にクリアし忘れると、
+  内容的にはもう無効なはずの古い署名がそのまま出力に残ってしまう
+  (署名生成・暗号学的検証そのものはCONTRIBUTING.mdの方針どおりpymaiml外
+  (MaiML-TOOLS層)の責務だが、「編集されたかどうか」はSDK内で`loads()`→
+  ミューテーションが完結するpymaimlでしか検知できない)。
+  `loads()`が返す`LoadedMaiml`はロード直後の`root`の`copy.deepcopy()`を
+  非公開の`_snapshot`として保持するようになり、
+  `dumps(root, drop_stale_signature=loaded)`は現在の`root`と
+  `loaded._snapshot`を(`document.signature`を除いて)比較し、署名以外の
+  内容が変わっていれば出力から`<Signature>`要素を省く
+  (`root.document.signature`自体は書き換えない)。`maiml_domain`の
+  `DocumentType`/`MaimlRootType`等は`dataclass`ではなく独自`__init__`の
+  クラスで`__eq__`も未定義のため、比較は`_build_maiml_element()`
+  (`dumps()`本体から切り出した木構築処理を`_write_document(...,
+  suppress_signature=True)`付きで両者に適用)によるXMLフィンガープリント
+  比較で行う。`drop_stale_signature=None`(デフォルト)では従来どおり
+  署名は無条件に素通しされ、後方互換。`loads()`を経由しない(スナップ
+  ショットを持たない)`LoadedMaiml`を渡した場合は分かりやすい`ValueError`
+  を送出する。回帰防止テストを4件追加
+  (`test_drop_stale_signature_keeps_signature_when_nothing_changed`、
+  `test_drop_stale_signature_drops_signature_when_content_edited`、
+  `test_drop_stale_signature_without_edits_matches_plain_dumps`、
+  `test_drop_stale_signature_requires_a_snapshot_from_loads`)。
 
 ### Fixed
 - `pymaiml.serialization`: `<uncertainty>`要素が書き込み・読み込みの両方で

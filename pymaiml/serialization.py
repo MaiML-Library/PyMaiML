@@ -52,6 +52,7 @@ from __future__ import annotations
 
 import base64
 import binascii
+import copy
 import inspect
 import re
 from dataclasses import dataclass, field
@@ -261,11 +262,19 @@ def _write_arc(parent_el: ET.Element, arc: "m.ArcType") -> ET.Element:
 # document  (maiml-document.xsd)
 # ---------------------------------------------------------------------------
 
-def _write_document(parent_el: ET.Element, doc: "m.DocumentType") -> ET.Element:
+def _write_document(
+    parent_el: ET.Element, doc: "m.DocumentType", *, suppress_signature: bool = False
+) -> ET.Element:
     """documentType: Signature? -> content -> creator+ -> vendor+ -> owner+ ->
-    instrument* -> date -> chain* -> parent*."""
+    instrument* -> date -> chain* -> parent*.
+
+    suppress_signature: write everything except <Signature>, even if
+    doc.signature is set. Used by dumps(drop_stale_signature=...) to omit a
+    now-stale signature from the OUTPUT without mutating the caller's
+    DocumentType.signature field, and by _content_changed_since_snapshot()
+    to compare two object trees while ignoring the signature itself."""
     doc_el = ET.SubElement(parent_el, "document", {"id": doc.id})
-    if doc.signature is not None:
+    if doc.signature is not None and not suppress_signature:
         doc_el.append(ET.fromstring(doc.signature))
     _write_global_content(doc_el, doc.content)
     for c in doc.creators:
@@ -542,25 +551,17 @@ def _dedupe_root_namespace_decls(xml_text: str) -> str:
     return xml_text[: match.start()] + open_tag + rebuilt_attrs + closer + xml_text[match.end():]
 
 
-def dumps(
+def _build_maiml_element(
     root_obj: Union["m.MaimlRootType", "m.ProtocolFileRootType"],
     *,
     extra_namespaces: Optional[Dict[str, str]] = None,
-    pretty: bool = True,
-) -> str:
-    """
-    Serialize a MaimlRootType/ProtocolFileRootType object tree to a MaiML
-    XML string.
-
-    extra_namespaces: {prefix: uri} declared as xmlns:<prefix> on the root
-    <maiml> element. Required for any custom key= prefix used on a
-    property/content (e.g. {"KYL": "http://example.org/kyl-instrument-properties"})
-    -- MaiML's key attributes are xs:QName, so XSD validation fails if the
-    prefix has no namespace declaration in scope. The XES lifecycle/concept/
-    time extensions, if used via property keys like "lifecycle:transition",
-    must likewise be declared here with their exact standard URIs
-    (http://www.xes-standard.org/<name>.xesext#).
-    """
+    suppress_signature: bool = False,
+) -> ET.Element:
+    """Build the <maiml> ElementTree tree for root_obj (shared by dumps()
+    and _content_changed_since_snapshot(), which both need the exact same
+    field-by-field walk of the object tree -- one to actually serialize a
+    file, the other only to compare two trees for equality without
+    re-implementing a second, possibly-incomplete walk by hand)."""
     if not isinstance(root_obj, (m.MaimlRootType, m.ProtocolFileRootType)):
         raise TypeError(
             "dumps() requires a maiml_domain.MaimlRootType or "
@@ -579,11 +580,104 @@ def dumps(
     if root_obj.features:
         maiml_el.set("features", root_obj.features)
 
-    _write_document(maiml_el, root_obj.document)
+    _write_document(maiml_el, root_obj.document, suppress_signature=suppress_signature)
     _write_protocol(maiml_el, root_obj.protocol)
     if isinstance(root_obj, m.MaimlRootType):
         _write_data(maiml_el, root_obj.data)
         _write_event_log(maiml_el, root_obj.event_log)
+    return maiml_el
+
+
+def _content_changed_since_snapshot(current_root_obj, snapshot_root_obj) -> bool:
+    """True if anything other than document.signature differs between
+    current_root_obj and a load-time snapshot (see LoadedMaiml._snapshot /
+    dumps(drop_stale_signature=...)).
+
+    maiml_domain's DocumentType/MaimlRootType/ProtocolFileRootType (and
+    every other HasIdAttributeType/RootObjectType subclass) have a custom
+    __init__ and no __eq__, so plain `==` on them is identity comparison,
+    not value comparison -- two structurally-identical-but-separate
+    instances (e.g. a copy.deepcopy()'d snapshot vs. the live, possibly-
+    edited object) would always compare unequal even with nothing changed.
+    dataclasses.replace()/fields() don't apply either, since these classes
+    aren't dataclasses. Rather than hand-writing a second, possibly-
+    incomplete deep-equality walk, we reuse the walk dumps() itself already
+    does: serialize both trees with any <Signature> suppressed (so the
+    comparison ignores the signature itself, which is the one field we
+    expect -- and allow -- to differ) and compare the resulting XML text."""
+    current_fingerprint = ET.tostring(
+        _build_maiml_element(current_root_obj, suppress_signature=True), encoding="unicode"
+    )
+    snapshot_fingerprint = ET.tostring(
+        _build_maiml_element(snapshot_root_obj, suppress_signature=True), encoding="unicode"
+    )
+    return current_fingerprint != snapshot_fingerprint
+
+
+def dumps(
+    root_obj: Union["m.MaimlRootType", "m.ProtocolFileRootType"],
+    *,
+    extra_namespaces: Optional[Dict[str, str]] = None,
+    pretty: bool = True,
+    drop_stale_signature: Optional["LoadedMaiml"] = None,
+) -> str:
+    """
+    Serialize a MaimlRootType/ProtocolFileRootType object tree to a MaiML
+    XML string.
+
+    extra_namespaces: {prefix: uri} declared as xmlns:<prefix> on the root
+    <maiml> element. Required for any custom key= prefix used on a
+    property/content (e.g. {"KYL": "http://example.org/kyl-instrument-properties"})
+    -- MaiML's key attributes are xs:QName, so XSD validation fails if the
+    prefix has no namespace declaration in scope. The XES lifecycle/concept/
+    time extensions, if used via property keys like "lifecycle:transition",
+    must likewise be declared here with their exact standard URIs
+    (http://www.xes-standard.org/<name>.xesext#).
+
+    drop_stale_signature: pass the LoadedMaiml returned by loads() to have
+    dumps() automatically omit <Signature> from the OUTPUT (without
+    mutating root_obj.document.signature) if anything besides the
+    signature itself has changed since that load -- e.g.:
+
+        loaded = pymaiml.loads(xml_text)
+        loaded.root.data.results_list[0].materials.append(new_material)
+        xml_text2 = pymaiml.dumps(
+            loaded.root,
+            extra_namespaces=loaded.namespaces,
+            drop_stale_signature=loaded,
+        )
+
+    A signature is a claim about the file's content at the moment it was
+    computed (see the external review's Finding 04 in CHANGELOG.md).
+    pymaiml does not compute or verify that claim itself -- signing and
+    cryptographic verification deliberately live outside pymaiml (see
+    CONTRIBUTING.md) -- but it CAN tell you, cheaply and without any
+    cryptography, whether you edited anything besides the signature since
+    loading, which is when the OLD signature is certain to no longer
+    describe the file. This is a convenience for that specific, common
+    case; it does not replace actually re-signing the output before
+    treating it as signed again. If nothing changed, the signature is
+    passed through unmodified, exactly as dumps() always did before this
+    parameter existed. Requires a LoadedMaiml that actually came from
+    loads() (it carries the load-time snapshot this needs) -- raises
+    ValueError otherwise.
+    """
+    suppress_signature = False
+    if drop_stale_signature is not None:
+        if drop_stale_signature._snapshot is None:
+            raise ValueError(
+                "drop_stale_signature requires the LoadedMaiml returned by "
+                "pymaiml.serialization.loads() -- it carries the load-time "
+                "content snapshot needed to detect edits. A LoadedMaiml "
+                "constructed by hand (e.g. in a test) has no such snapshot."
+            )
+        suppress_signature = _content_changed_since_snapshot(
+            root_obj, drop_stale_signature._snapshot
+        )
+
+    maiml_el = _build_maiml_element(
+        root_obj, extra_namespaces=extra_namespaces, suppress_signature=suppress_signature
+    )
 
     rough = ET.tostring(maiml_el, encoding="unicode")
     rough = _dedupe_root_namespace_decls(rough)
@@ -1120,6 +1214,15 @@ class LoadedMaiml:
     root: Union["m.MaimlRootType", "m.ProtocolFileRootType"]
     namespaces: Dict[str, str] = field(default_factory=dict)
     ids: List[str] = field(default_factory=list)
+    _snapshot: Optional[Union["m.MaimlRootType", "m.ProtocolFileRootType"]] = field(
+        default=None, repr=False, compare=False, init=False
+    )
+    """A copy.deepcopy() of `root` taken at load time, set by loads() right
+    after construction (never by callers). Powers dumps(drop_stale_signature=
+    this_LoadedMaiml): comparing the live (possibly-edited) `root` against
+    this frozen copy is how dumps() tells whether anything besides the
+    signature changed since the load. Excluded from __init__/repr/equality
+    so LoadedMaiml's public constructor signature is unchanged."""
 
 
 def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
@@ -1156,7 +1259,9 @@ def loads(xml_text: Union[str, bytes]) -> LoadedMaiml:
             f"Unknown maiml/@xsi:type: {xsi_type!r} (expected 'maimlRootType' or 'protocolFileRootType')"
         )
 
-    return LoadedMaiml(root=root_obj, namespaces=namespaces, ids=all_ids)
+    loaded = LoadedMaiml(root=root_obj, namespaces=namespaces, ids=all_ids)
+    loaded._snapshot = copy.deepcopy(root_obj)
+    return loaded
 
 
 def load(path: Union[str, Path]) -> LoadedMaiml:

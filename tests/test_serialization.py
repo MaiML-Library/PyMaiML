@@ -561,3 +561,83 @@ def test_units_formatstring_scalefactor_on_a_class_that_accepts_them_still_work(
     assert prop.format_string == "0.00"
     assert prop.scale_factor == 2
     assert prop.value == 1.5
+
+
+
+# ---------------------------------------------------------------------------
+# Regression tests for dumps(drop_stale_signature=...): a signature is a
+# claim about the file's content at the moment it was computed, but dumps()
+# has no memory of what the content looked like at load time unless the
+# caller hands that back via the LoadedMaiml returned by loads(). These
+# tests exercise the mechanism end to end (kept-when-unchanged, dropped-
+# when-edited, and the ValueError for a hand-built LoadedMaiml that never
+# went through loads() and so has no snapshot to compare against).
+# ---------------------------------------------------------------------------
+
+def _signed_minimal_root_and_loaded():
+    """Build a signed minimal root, dumps() it, and loads() it back --
+    the realistic starting point for a load-edit-dump workflow."""
+    root = _minimal_root_with_signature(
+        '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
+        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
+    )
+    xml1 = serialization.dumps(root)
+    return serialization.loads(xml1)
+
+
+def test_drop_stale_signature_keeps_signature_when_nothing_changed():
+    loaded = _signed_minimal_root_and_loaded()
+
+    xml2 = serialization.dumps(
+        loaded.root,
+        extra_namespaces=loaded.namespaces,
+        drop_stale_signature=loaded,
+    )
+    assert "Signature" in xml2
+
+
+def test_drop_stale_signature_drops_signature_when_content_edited():
+    loaded = _signed_minimal_root_and_loaded()
+
+    # Edit something unrelated to the signature itself.
+    loaded.root.document.date = loaded.root.document.date.replace(year=2030)
+
+    xml2 = serialization.dumps(
+        loaded.root,
+        extra_namespaces=loaded.namespaces,
+        drop_stale_signature=loaded,
+    )
+    assert "Signature" not in xml2
+    # ...and the caller's own object is left untouched -- dumps() decides
+    # what to WRITE, it does not mutate document.signature behind the
+    # caller's back.
+    assert loaded.root.document.signature is not None
+
+
+def test_drop_stale_signature_without_edits_matches_plain_dumps():
+    """Sanity check: when nothing changed, drop_stale_signature=loaded must
+    produce the exact same output as a plain dumps() call -- the parameter
+    should be a pure no-op in the unchanged case."""
+    loaded = _signed_minimal_root_and_loaded()
+
+    xml_plain = serialization.dumps(loaded.root, extra_namespaces=loaded.namespaces)
+    xml_guarded = serialization.dumps(
+        loaded.root, extra_namespaces=loaded.namespaces, drop_stale_signature=loaded,
+    )
+    assert xml_plain == xml_guarded
+
+
+def test_drop_stale_signature_requires_a_snapshot_from_loads():
+    """A LoadedMaiml built by hand (not returned by loads()) has no
+    load-time snapshot to compare against -- must fail clearly rather than
+    silently skip the check or crash with an unrelated AttributeError."""
+    root = _minimal_root_with_signature(
+        '<ds:Signature xmlns:ds="http://www.w3.org/2000/09/xmldsig#">'
+        "<ds:SignedInfo><ds:DigestValue>AAAA</ds:DigestValue></ds:SignedInfo>"
+        "<ds:SignatureValue>BBBB</ds:SignatureValue></ds:Signature>"
+    )
+    hand_built = serialization.LoadedMaiml(root=root)
+
+    with pytest.raises(ValueError, match="requires the LoadedMaiml returned by"):
+        serialization.dumps(root, drop_stale_signature=hand_built)
