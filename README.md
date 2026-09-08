@@ -1,5 +1,7 @@
 # PyMaiML
 
+[![Tests](https://github.com/MaiML-Library/PyMaiML/actions/workflows/test.yml/badge.svg)](https://github.com/MaiML-Library/PyMaiML/actions/workflows/test.yml)
+
 MaiML(JIS K 0200 / Measurement Analysis Instrument Markup Language)を
 Pythonから扱うためのSDKです。
 
