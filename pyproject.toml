@@ -20,7 +20,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.1.0",
+    "maiml-domain @ git+https://github.com/MaiML-Library/MaiML-Domain.git@v0.2.0",
     "lxml>=4.9",
 ]
 
