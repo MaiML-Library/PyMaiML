@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import inspect
 import itertools
+import re
 import uuid as _uuidlib
 from datetime import datetime
 from decimal import Decimal
@@ -71,6 +72,25 @@ LIFECYCLE_NS = "http://www.xes-standard.org/lifecycle.xesext#"
 # IdFactory
 # ---------------------------------------------------------------------------
 
+# xs:ID's lexical space is xs:NCName's (Name minus anything containing a
+# colon). This is an ASCII-first, practical approximation of the real XML
+# NCName production (NCNameStartChar/NCNameChar formally span specific
+# Unicode "Letter"/"CombiningChar"/"Extender" ranges) rather than a
+# byte-for-byte transcription of it: with re.UNICODE, `\w` already covers
+# Unicode letters/digits/underscore, so `[^\W\d]` (a "word" character that
+# is not a digit) is letters-or-underscore for the required non-digit
+# first character, and `[\w.-]*` covers the rest (adding '.'/'-', which
+# NCName allows but \w doesn't). It rejects what actually matters for a
+# generated prefix -- a leading digit, ':', whitespace, and other
+# punctuation -- without having to hand-encode the XML spec's Unicode
+# character tables.
+_NCNAME_RE = re.compile(r"^[^\W\d][\w.-]*$", re.UNICODE)
+
+
+def _is_valid_ncname(value: str) -> bool:
+    return bool(value) and _NCNAME_RE.match(value) is not None
+
+
 class IdFactory:
     """
     Generates unique xs:ID values and MaiML uuid values.
@@ -89,6 +109,19 @@ class IdFactory:
     >>> isinstance(ids.new_uuid(), m.Uuid)
     True
 
+    Every id this factory generates is `prefix` + an integer, so `prefix`
+    itself must already be a valid xs:ID (NCName) on its own -- appending
+    digits to a valid NCName always yields another valid NCName, but
+    e.g. new_id("123") would produce "1231", which starts with a digit and
+    is not a valid xs:ID. new_id() rejects such a prefix with ValueError
+    the first time it's used, rather than silently handing back an id that
+    passes through this SDK fine but fails XSD validation much later:
+
+    >>> IdFactory().new_id("123")
+    Traceback (most recent call last):
+        ...
+    ValueError: IdFactory.new_id: prefix='123' would not produce a valid xs:ID (NCName) -- xs:ID must not start with a digit, and must not contain ':' or other characters outside [A-Za-z0-9_.-] (plus Unicode letters). Pass a prefix that is itself a valid xs:ID.
+
     When adding new elements to a file that already has other elements in
     it (e.g. loading an existing protocol via
     pymaiml.serialization.load() and building new data/eventLog on top of
@@ -105,7 +138,18 @@ class IdFactory:
         self._issued: set = set()
 
     def new_id(self, prefix: str) -> str:
-        counter = self._counters.setdefault(prefix, itertools.count(1))
+        counter = self._counters.get(prefix)
+        if counter is None:
+            if not _is_valid_ncname(prefix):
+                raise ValueError(
+                    f"IdFactory.new_id: prefix={prefix!r} would not produce a "
+                    "valid xs:ID (NCName) -- xs:ID must not start with a "
+                    "digit, and must not contain ':' or other characters "
+                    "outside [A-Za-z0-9_.-] (plus Unicode letters). Pass a "
+                    "prefix that is itself a valid xs:ID."
+                )
+            counter = itertools.count(1)
+            self._counters[prefix] = counter
         while True:
             candidate = f"{prefix}{next(counter)}"
             if candidate not in self._issued:

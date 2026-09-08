@@ -22,6 +22,49 @@ def test_id_factory_uuids_are_valid_maiml_uuids():
     assert isinstance(u, m.Uuid)
 
 
+# ---------------------------------------------------------------------------
+# IdFactory.new_id(): prefix must itself be a valid xs:ID (NCName), since
+# every generated id is prefix + an integer
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize(
+    "bad_prefix",
+    [
+        "123",          # starts with a digit -- "1231" would not be a valid xs:ID
+        "",              # empty -- "1" alone is a valid NCName, but the intent (a prefix) is not
+        "ns:foo",        # ':' is exactly what makes Name -> NCName invalid
+        "has space",     # whitespace is not a NameChar
+        "a!b",           # '!' is not a NameChar
+    ],
+)
+def test_new_id_rejects_prefix_that_would_not_be_a_valid_xs_id(bad_prefix):
+    with pytest.raises(ValueError, match="valid xs:ID"):
+        IdFactory().new_id(bad_prefix)
+
+
+@pytest.mark.parametrize(
+    "good_prefix",
+    ["material", "material_template", "material-template", "material.template", "_material", "ex1"],
+)
+def test_new_id_accepts_a_prefix_that_is_itself_a_valid_xs_id(good_prefix):
+    assert IdFactory().new_id(good_prefix) == f"{good_prefix}1"
+
+
+def test_new_id_rejects_bad_prefix_even_after_a_good_prefix_was_already_used():
+    ids = IdFactory()
+    ids.new_id("material")
+    with pytest.raises(ValueError, match="valid xs:ID"):
+        ids.new_id("123")
+
+
+def test_new_id_only_validates_a_prefix_once_per_factory():
+    # Once a prefix has been accepted, reusing it should never re-raise --
+    # only the first call for a given prefix needs to validate it.
+    ids = IdFactory()
+    assert ids.new_id("material") == "material1"
+    assert ids.new_id("material") == "material2"
+
+
 @pytest.mark.parametrize(
     "value, expected_cls",
     [

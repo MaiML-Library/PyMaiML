@@ -234,6 +234,21 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `test_infer_property_accepts_bytes_and_bytearray_together`、
   `test_infer_property_heterogeneous_error_names_the_offending_element`)。
   外部レビューで報告された所見。
+- `pymaiml.builders.IdFactory.new_id()`: 生成されるidは常に`prefix + 連番の
+  整数`であるにもかかわらず、`prefix`自体がxs:ID(NCName)として妥当かを
+  一切確認していなかったため、`ids.new_id("123")`のように数字始まりの
+  `prefix`を渡すと`"1231"`のようなxs:ID違反のidをそのまま生成できてしまう
+  問題を修正。`_is_valid_ncname()`を追加し、`new_id()`が各`prefix`を
+  (そのprefixで最初に呼ばれた時点で1回だけ)検証、数字始まり・`:`を含む・
+  空文字列など、NCNameとして不正な`prefix`は分かりやすい`ValueError`で
+  即座に拒否するようにした(`IdFactory`のdocstringにdoctest例を追記)。
+  回帰防止テストを`tests/test_builders.py`に7件追加
+  (`test_new_id_rejects_prefix_that_would_not_be_a_valid_xs_id`
+  ×5パターン、
+  `test_new_id_accepts_a_prefix_that_is_itself_a_valid_xs_id`×6パターン、
+  `test_new_id_rejects_bad_prefix_even_after_a_good_prefix_was_already_used`、
+  `test_new_id_only_validates_a_prefix_once_per_factory`)。
+  外部レビューで報告された所見。
 
 ### Changed
 - README.md: `pymaiml.serialization`の節に既知の制限を2点追記。
