@@ -17,7 +17,7 @@ Pythonから扱うためのSDKです。
   制約**(`minOccurs`/`maxOccurs`、`xs:choice`の排他性、required属性、
   `simpleType`の字句上の制約など)はコンストラクタが検証し、違反時には
   `ValueError`/`TypeError`を送出します。XMLシリアライズは持ちません。
-- `pymaiml`(このリポジトリ): `maiml_domain`をpipの通常の依存パッケージ
+- `pymaiml`(このリポジトリ): `maiml_domain`を依存パッケージ
   として取り込み、その上に以下を実装する層。
   - `.maiml`ファイルとの相互変換(シリアライズ/デシリアライズ)
   - **複数要素・複数セクションをまたいで初めて判断できる検証**
@@ -137,6 +137,7 @@ pip install --no-deps -e .
   ```
 
   **既知の制限:**
+
   - `loads()`はスキーマ妥当な入力のみを対象としています。必須要素が
     欠けたファイルは`maiml_domain`の各クラスがコンストラクタで基数
     (`minOccurs`)を検証する設計のため、その場で`ValueError`が発生して
@@ -154,11 +155,11 @@ pip install --no-deps -e .
     `dumps()`で往復させる用途(署名を保ったままの部分更新)には現状
     対応していません。そのような更新が必要な場合は、原文のバイト列に
     対して直接パッチを当ててください。
-
 - `pymaiml.validation` -- `.maiml`/`.maiml.zip`/`.mai`ファイルを、
   同梱の公式MaiML-Schema-1_0(`pymaiml/schema/`)とMaiML AI Common
   Specificationの補足ルール(`lifecycle:transition="complete"`の必須化、
   `ref`参照先の型チェック等)の両方で検証します。
+
   ```python
   from pymaiml.validation import validate
   result = validate("sample.maiml")
@@ -176,6 +177,7 @@ pip install --no-deps -e .
   > `maiml-schema-validator`スキルの`reference/MaiML-Schema-1_0/`にも
   > 同じ差分を適用した同一内容のコピーを保持しています(CONTRIBUTING.md
   > 参照)。
+  >
 - `pymaiml.builders` -- オブジェクトツリーを手で組み立てる際の定型作業を
   減らすヘルパー群。`IdFactory`(id/uuidの重複しない採番。
   `reserve()`/`from_existing_ids()`で既存ファイル読み込み後のid衝突を
@@ -232,6 +234,7 @@ pip install --no-deps -e .
   > その呼び出しでは`registry=`を渡さずに`infer_property()`/
   > `infer_content()`を呼んでください(shared-typeチェックの対象から
   > 外れます)。
+  >
 
 ## テスト
 
