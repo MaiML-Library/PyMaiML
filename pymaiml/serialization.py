@@ -50,7 +50,7 @@ Known limitations (documented rather than silently guessed at):
   - document.signature (a <Signature> read back by loads()) is read for
     inspection but never re-emitted by dumps()/dump() -- see dumps()'s
     docstring for why. If you need a signed output, sign the bytes dumps()
-    produces with a dedicated tool (e.g. the maiml-signer skill), after
+    produces with a dedicated external tool, after
     dumping, not before.
   - loads() picks out only the specific XSD elements/attributes it knows
     about; it does not model XML comments or processing instructions at
@@ -643,7 +643,7 @@ def dumps(
     root_obj.document.signature back for inspection (e.g. to hand to an
     external verifier), but dumps()/dump() never write it back out. If you
     need a signed MaiML file, dump the content first, then sign the
-    resulting bytes with a dedicated tool (e.g. the maiml-signer skill) --
+    resulting bytes with a dedicated external tool --
     treat "build/edit the MaiML content" and "sign the finished file" as
     two separate steps, in that order, never the other way around.
     """

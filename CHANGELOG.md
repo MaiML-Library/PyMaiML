@@ -363,7 +363,7 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `<Signature>`は含まれない」という点が、以前(署名以外に変更が無ければ
   維持されていた)から変わります。署名済みファイルが必要な場合は、
   `dumps()`/`dump()`で内容を確定させた後に、その出力バイト列へ
-  `maiml-signer`スキル等で改めて署名してください。`pymaiml`へ将来
+  外部の署名ツールで改めて署名してください。`pymaiml`へ将来
   署名対応を追加する場合も、`pymaiml.serialization`とは独立した
   モジュール(例: `pymaiml.signature`)に分離することを`CONTRIBUTING.md`
   で推奨事項として明記しました。
