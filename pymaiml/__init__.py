@@ -32,10 +32,14 @@ concerns live here, in the SDK layer, split across four modules:
       "list the X" functions return flat lists of strings: get_uuids(),
       get_keys(), get_namespaces(), get_insertion_uris(). Two
       object-returning functions take keyword-argument filters instead:
-      get_templates(xml_text, *, kind=None) and get_instances(xml_text,
-      *, kind=None, instruction_id=None), returning the actual
-      maiml_domain template/instance objects (id-only access is just
-      [obj.id for obj in ...] on the result, not a separate function).
+      get_templates(xml_text, *, kind=None, instruction_id=None) and
+      get_instances(xml_text, *, kind=None, instruction_id=None),
+      returning the actual maiml_domain template/instance objects
+      (id-only access is just [obj.id for obj in ...] on the result, not
+      a separate function). instruction_id= narrows either function to
+      what a given <instruction> reaches via PNML place/transition/arc
+      topology; get_instances() additionally unions in whatever that
+      instruction's own recorded events point to.
       Every function except get_namespaces() reads its answer off the
       maiml_domain object tree serialization.loads() builds (so the file
       must be schema-valid); get_namespaces() is the one exception and

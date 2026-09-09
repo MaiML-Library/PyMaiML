@@ -321,12 +321,102 @@ def test_get_instances_requires_schema_valid_maiml_like_loads_does():
         query.get_instances("<root/>")
 
 
-def test_get_instances_with_instruction_id_follows_event_results_refs_chain(minimal_root):
+def _add_orphan_instruction(root, ids_suffix="orphan"):
+    """Attach a second instruction, wired to a transition that no <arc>
+    ever touches, to `root`'s one program/pnml -- an instruction that is
+    real (so instruction_id= for it doesn't raise) but has nothing
+    reachable from it via the PNML topology chain (no arc -> no place ->
+    no template) and nothing via any event either (no event references
+    it). Returns the new InstructionType. Shared by tests that need a
+    genuine "nothing linked via either path" instruction, since
+    minimal_root's own one instruction/transition/place/template are all
+    wired together by construction (see conftest.py)."""
+    orphan_trans = m.TransitionType(id=f"{ids_suffix}-trans")
+    orphan_instr = m.InstructionType(
+        id=f"{ids_suffix}-instr",
+        transition_refs=[m.TransitionRefType(id=f"{ids_suffix}-tref", ref=orphan_trans.id)],
+        content=m.GlobalObjectContent(uuid=m.Uuid("33333333-3333-3333-8333-333333333333")),
+    )
+    root.protocol.methods[0].pnmls[0].transitions = [
+        *root.protocol.methods[0].pnmls[0].transitions,
+        orphan_trans,
+    ]
+    root.protocol.methods[0].programs[0].instructions = [
+        *root.protocol.methods[0].programs[0].instructions,
+        orphan_instr,
+    ]
+    return orphan_instr
+
+
+def test_get_templates_with_instruction_id_follows_pnml_topology(minimal_root):
+    """minimal_root's one instruction -> transitionRef -> the one
+    <transition> -> the one <arc> -> the one <place> -> the one
+    materialTemplate's own place_refs -- get_templates(instruction_id=...)
+    must follow that exact chain (see conftest.py for how these are
+    wired) and find it."""
+    instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    linked = query.get_templates(xml, instruction_id=instr_id)
+    assert [type(t).__name__ for t in linked] == ["MaterialTemplateType"]
+    assert linked[0].id == minimal_root.protocol.material_templates[0].id
+
+
+def test_get_templates_with_instruction_id_and_kind_combine(minimal_root):
+    """kind= and instruction_id= narrow independently -- kind="condition"
+    with a valid, topology-linked instruction_id still returns [] since
+    the only template reachable from it is a materialTemplate."""
+    instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    assert query.get_templates(xml, kind="condition", instruction_id=instr_id) == []
+    assert len(query.get_templates(xml, kind="material", instruction_id=instr_id)) == 1
+
+
+def test_get_templates_with_orphan_instruction_id_returns_empty_list(minimal_root):
+    """A real instruction whose transition no <arc> touches has nothing
+    reachable via PNML topology -- not an error, unlike an instruction_id
+    that does not exist at all (see the next test)."""
+    orphan_instr = _add_orphan_instruction(minimal_root)
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    assert query.get_templates(xml, instruction_id=orphan_instr.id) == []
+
+
+def test_get_templates_unknown_instruction_id_raises(minimal_root):
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    with pytest.raises(ValueError, match="no <instruction id="):
+        query.get_templates(xml, instruction_id="no-such-instruction")
+
+
+def test_get_templates_with_instruction_id_works_on_protocol_only_root(protocol_only_root):
+    """The instruction -> transitionRef -> transition -> arc -> place ->
+    template chain lives entirely under <protocol> -- it needs no
+    <data>/<eventLog>, so this works the same on a protocolFileRootType as
+    on a full maimlRootType (see conftest.py's protocol_only_root, wired
+    the same way as minimal_root's protocol side)."""
+    instr_id = protocol_only_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(protocol_only_root)
+    linked = query.get_templates(xml, instruction_id=instr_id)
+    assert [type(t).__name__ for t in linked] == ["MaterialTemplateType"]
+
+
+def test_get_instances_with_instruction_id_finds_instance_via_topology_without_any_event(minimal_root):
     """minimal_root's own new_complete_event() does not set results_refs
-    (see conftest.py/builders.py) -- add one linking the instruction's
-    event to the file's one <results>, and instruction_id= must then find
-    the instance that <results> holds, via
-    instruction -> event -> results_refs -> results -> materials."""
+    (see conftest.py/builders.py), so path 1 (event chain) has nothing to
+    find -- yet instruction_id= must still find the one material instance
+    via path 2 alone: instruction -> transitionRef -> transition -> arc ->
+    place -> template -> instance.ref."""
+    instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    linked = query.get_instances(xml, instruction_id=instr_id)
+    assert [type(i).__name__ for i in linked] == ["MaterialType"]
+    assert linked[0].id == minimal_root.data.results_list[0].materials[0].id
+
+
+def test_get_instances_with_instruction_id_unions_both_paths_without_duplicating(minimal_root):
+    """Link the instruction's event to the file's one <results> too (see
+    conftest.py -- by default it has no results_refs) so the one material
+    instance now becomes reachable via *both* path 1 (event chain) and
+    path 2 (PNML topology, already true by construction). The union must
+    still list it exactly once, not twice."""
     instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
     results_id = minimal_root.data.results_list[0].id
     event = minimal_root.event_log.logs[0].traces[0].events[0]
@@ -338,14 +428,54 @@ def test_get_instances_with_instruction_id_follows_event_results_refs_chain(mini
     assert linked[0].id == minimal_root.data.results_list[0].materials[0].id
 
 
-def test_get_instances_valid_instruction_id_with_nothing_linked_returns_empty_list(minimal_root):
-    """minimal_root's event has no results_refs by default (see
-    conftest.py's new_complete_event() call) -- a real, existing
-    instruction with nothing linked to it yet is not an error, unlike an
-    instruction_id that does not exist at all (see the next test)."""
+def test_get_instances_with_instruction_id_event_path_finds_what_topology_cannot(minimal_root):
+    """A condition instance of a *second* template that the instruction's
+    transitions are not topologically wired to (a new, unconnected place)
+    is invisible to path 2, but still reachable via path 1 if an event
+    records it -- the two paths are genuinely independent, not one a
+    subset of the other."""
     instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+
+    unwired_place = m.PlaceType(id="unwired-place")
+    minimal_root.protocol.methods[0].pnmls[0].places = [
+        *minimal_root.protocol.methods[0].pnmls[0].places,
+        unwired_place,
+    ]
+    ct = m.ConditionTemplateType(
+        id="ct-unwired",
+        place_refs=[m.PlaceRefType(id="ct-unwired-pref", ref=unwired_place.id)],
+        content=m.GlobalObjectContent(uuid=m.Uuid("44444444-4444-3444-8444-444444444444")),
+    )
+    minimal_root.protocol.condition_templates = [ct]
+    condition = m.ConditionType(
+        id="condition-unwired", ref=ct.id,
+        content=m.GlobalObjectContent(uuid=m.Uuid("55555555-5555-3555-8555-555555555555")),
+    )
+    minimal_root.data.results_list[0].conditions = [condition]
+
+    results_id = minimal_root.data.results_list[0].id
+    event = minimal_root.event_log.logs[0].traces[0].events[0]
+    event.results_refs = [m.ResultsRefType(id="rref1", ref=results_id)]
+
     xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
-    assert query.get_instances(xml, instruction_id=instr_id) == []
+
+    # Topology alone (get_templates) never reaches the unwired template.
+    assert ct.id not in [t.id for t in query.get_templates(xml, instruction_id=instr_id)]
+
+    # But get_instances(), unioning both paths, still finds the condition
+    # instance via the event chain, alongside the material instance path 2
+    # finds -- both kinds present, from two different paths.
+    linked = query.get_instances(xml, instruction_id=instr_id)
+    assert sorted(type(i).__name__ for i in linked) == ["ConditionType", "MaterialType"]
+
+
+def test_get_instances_with_orphan_instruction_id_returns_empty_list(minimal_root):
+    """A real instruction with nothing reachable via either path is not an
+    error, unlike an instruction_id that does not exist at all (see the
+    next test)."""
+    orphan_instr = _add_orphan_instruction(minimal_root)
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    assert query.get_instances(xml, instruction_id=orphan_instr.id) == []
 
 
 def test_get_instances_unknown_instruction_id_raises(minimal_root):
@@ -364,11 +494,14 @@ def test_get_templates_works_on_protocol_only_root(protocol_only_root):
 
 def test_get_instances_on_protocol_only_root_is_always_empty(protocol_only_root):
     """A protocolFileRootType has no <data>/<eventLog> at all (see
-    maiml_domain.root.ProtocolFileRootType), so there is nothing
-    get_instances() could ever find -- with or without instruction_id=. A
-    *valid* instruction_id there still resolves without raising (the
-    <instruction> element itself is present); only an unknown one raises,
-    exactly as for a full maimlRootType file."""
+    maiml_domain.root.ProtocolFileRootType), so there is no instance
+    object for get_instances() to ever find -- with or without
+    instruction_id=, and regardless of whether path 2 (PNML topology)
+    finds a template. A *valid* instruction_id there still resolves
+    without raising (the <instruction> element itself is present, and
+    get_templates() can still find its template -- see the dedicated
+    protocol-only test above); only an unknown one raises, exactly as for
+    a full maimlRootType file."""
     instr_id = protocol_only_root.protocol.methods[0].programs[0].instructions[0].id
     xml = serialization.dumps(protocol_only_root)
     assert query.get_instances(xml) == []

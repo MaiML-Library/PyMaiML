@@ -323,8 +323,9 @@ pip install --no-deps -e .
   xml_text = open("sample.maiml", "rb").read()
 
   # テンプレート一覧(material/condition/resultTemplateの実体そのもの)
-  query.get_templates(xml_text)                 # -> 全種類
-  query.get_templates(xml_text, kind="material") # -> materialTemplateのみ
+  query.get_templates(xml_text)                            # -> 全種類
+  query.get_templates(xml_text, kind="material")            # -> materialTemplateのみ
+  query.get_templates(xml_text, instruction_id="instr-1")   # -> ある instruction にPNML経路で紐づくものだけ
 
   # インスタンス一覧(material/condition/resultの実体そのもの)
   query.get_instances(xml_text)                            # -> 全種類
@@ -337,25 +338,37 @@ pip install --no-deps -e .
 
   `kind=`は`"material"`/`"condition"`/`"result"`のいずれかで、指定しなければ
   (`None`、既定値)3種類まとめて返します。未知の`kind`を渡すと`ValueError`に
-  なります。`get_templates()`に`instruction_id=`はありません --
-  テンプレートとinstructionの対応はPNMLのplace/transitionトポロジー経由の
-  間接的なものにとどまり、キーワード引数として実装できるほど明確な仕様が
-  ないためです。
+  なります。
 
-  `get_instances()`の`instruction_id=`は、指定した`<instruction id=...>`に
-  紐づくインスタンスだけに絞り込みます。辿る経路は
-  `instruction` → (`ref`で参照する)`event` → `event`の`results_refs` →
-  `results` → `results`の`materials`/`conditions`/`results`という、
-  MaiMLスキーマ上instructionからインスタンスへ辿れる唯一の経路です
-  (instructionからインスタンスへの直接参照はありません)。指定した
-  `instruction_id`がファイル内のどの`<instruction>`にも一致しない場合は
-  `ValueError`になります(タイプミスを黙って`[]`にせず、はっきり検出する
-  ためです)。一方、`instruction_id`自体は実在するが、まだ何も紐づいて
-  いない場合は`ValueError`ではなく`[]`を返します -- この2つは意図的に
-  区別されています。`protocolFileRootType`(`<data>`/`<eventLog>`を持たない
-  手法単体ファイル)には`get_instances()`が見つけられるものが何もないため、
-  常に`[]`を返します(実在する`instruction_id`を渡してもエラーにはならず、
-  単に紐づく`event`が存在しないだけです)。
+  `instruction_id=`は`get_templates()`/`get_instances()`の両方にあります。
+  共通の経路は、指定した`<instruction id=...>`の`transitionRef`が指す
+  `<transition>` → その`<transition>`に触れる`<arc>` → その`<arc>`の
+  もう一方の`<place>` → その`<place>`を`placeRef`で指すテンプレート、という
+  PNMLトポロジー経由の連鎖です。`get_templates()`はここで止まり、その
+  テンプレートを返します。`get_instances()`はさらにもう1段、そのテンプレート
+  を`ref`で指すインスタンスまで辿ります。加えて`get_instances()`だけは、
+  もう1つの独立した経路 -- `instruction` → (`ref`で参照する)`event` →
+  `event`の`results_refs` → `results` → `results`の
+  `materials`/`conditions`/`results` -- で見つかるインスタンスも**和集合**
+  として合流させます(両方の経路から見つかったインスタンスは1回だけ
+  列挙されます)。前者(PNML経路)は「このinstructionの遷移が配線上どの
+  テンプレートに繋がっているか」、後者(event経路)は「このinstructionの
+  実行が実際に記録したインスタンスは何か」という、それぞれ独立した問いに
+  答えるものです。
+
+  いずれの関数でも、指定した`instruction_id`がファイル内のどの
+  `<instruction>`にも一致しない場合は`ValueError`になります(タイプミスを
+  黙って`[]`にせず、はっきり検出するためです)。一方、`instruction_id`自体は
+  実在するが、いずれの経路からも何も見つからない場合は`ValueError`では
+  なく`[]`を返します -- この2つは意図的に区別されています。
+
+  PNML経由の連鎖は`<protocol>`側だけで完結するため、`get_templates()`は
+  `protocolFileRootType`(`<data>`/`<eventLog>`を持たない手法単体ファイル)
+  でも`instruction_id=`を含めて通常どおり動作します。一方`get_instances()`
+  は、テンプレートまでは辿れてもインスタンスの実体自体がそもそも存在
+  しないため(`<data>`が無い)、`instruction_id`の有効・無効を問わず常に
+  `[]`を返します(実在する`instruction_id`を渡してもエラーにはならず、
+  単に返せるインスタンスが無いだけです)。
 
 ## テスト
 

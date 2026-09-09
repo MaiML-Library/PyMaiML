@@ -563,6 +563,56 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   ユーザー要望(「次は、template一覧、インスタンス一覧を取得する機能を
   つけたい。全て取得・idだけ取得・instructionに紐づくものを取得、、、
   など機能を増やせるようにしたい。」)。
+- **`get_templates()`にも`instruction_id=`を追加し、`get_instances()`の
+  `instruction_id=`をPNMLトポロジー経由の経路と合流させました。** 直前の
+  エントリで追加した`get_instances(xml_text, *, kind=None,
+  instruction_id=None)`は、`instruction`からインスタンスへの経路として
+  event連鎖(`instruction` → `event` → `results_refs` → `results` →
+  `materials`/`conditions`/`results`)のみを実装していましたが、それとは
+  独立したもう1つの経路 -- `instruction` → `transitionRef` → `transition`
+  → `arc` → `place` → テンプレートの`placeRef` -- による絞り込みを追加
+  してほしいというユーザー要望を受け、以下のとおり変更しました。
+  - `get_templates(xml_text, *, kind=None, instruction_id=None)` --
+    `instruction_id`を新設。指定した`<instruction id=...>`の
+    `transitionRef`が指す`<transition>`に触れる`<arc>`から、その
+    もう一方の`<place>`を`placeRef`で指すテンプレートまでを辿って
+    絞り込みます(内部ヘルパー`_templates_linked_to_instruction()`)。
+  - `get_instances()`の`instruction_id=`は、上記のテンプレート絞り込みに
+    さらにもう1段(テンプレートを`ref`で指すインスタンスまで)進めた経路
+    と、既存のevent連鎖経路の**和集合**を返すよう変更しました
+    (どちらの経路からも見つかるインスタンスは1回だけ列挙されます)。
+
+  この2つの経路は独立して意味を持ちます。event連鎖は「このinstructionの
+  実行が実際に記録したインスタンスは何か」、PNMLトポロジー経路は
+  「このinstructionの遷移が配線上どのテンプレート(のインスタンス)に
+  繋がっているか」を答えるもので、一方が他方の部分集合とは限りません
+  (テンプレートは配線上繋がっているが、まだ1件もeventが記録していない
+  こともあれば、逆に配線を見ただけでは分からない対応がevent側に記録
+  されていることもあります)。
+
+  `ArcType.source`/`target`はplace/transitionのどちらのidも取り得るため
+  (`maiml_domain.pnml`参照)、内部実装ではinstructionのtransition群と
+  一致する側を`arc`の両端どちらからでも検出し、もう一方をplace候補として
+  扱います。
+
+  `instruction_id`の存在チェック(未知のidなら`ValueError`、実在するが
+  何も見つからない場合は`[]`)は両関数・両経路を通じて一貫しています。
+  `protocolFileRootType`(手法単体ファイル、`<data>`/`<eventLog>`なし)
+  でも、PNMLトポロジー経路自体は`<protocol>`側だけで完結するため
+  `get_templates(instruction_id=...)`は通常どおり動作するようになり
+  ました。`get_instances()`はテンプレートまでは辿れても実インスタンスが
+  存在しないため、この場合も常に`[]`のままです。
+
+  `pymaiml/query.py`のモジュールdocstring・両関数のdocstringを更新し、
+  `tests/test_query.py`に、PNMLトポロジー単体での絞り込み・`kind`との
+  組み合わせ・未配線instructionでの`[]`・未知のinstruction_idでの
+  `ValueError`・`protocolFileRootType`での動作・event経路とPNML経路の
+  和集合が重複しないことの確認・両経路が互いに見つけられないものを
+  それぞれ見つけられることの確認、を検証するテストを追加しました
+  (`README.md`の`pymaiml.query`節、`pymaiml/__init__.py`のモジュール
+  概要も更新)。ユーザー要望(「instruction→transitionRef→transition→
+  place→template→インスタンスという経路で絞り込んでください」
+  「templateの場合も同様に」)。
 
 ## [0.1.0] - 未リリース
 

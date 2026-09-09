@@ -68,50 +68,64 @@ pymaiml.serialization.loads(xml_text) and walk loaded.root with the same
 _iter_domain_objects() helper the four functions above use, so the same
 schema-validity requirement applies (see above).
 
-  - get_templates(xml_text, *, kind=None): kind, when given, must be one
-    of "material"/"condition"/"result" (anything else raises ValueError)
-    and restricts the result to just that template kind; kind=None (the
-    default) returns all three kinds together, in document order. A
-    template is only ever nested under a program/method/protocol
-    (maiml_domain.protocol.ProgramType/MethodType/ProtocolType's own
-    material_templates/condition_templates/result_templates lists), and
-    each of those three structural levels can define its own, separate
-    templates -- get_templates() does not distinguish which level a given
-    template came from, since maiml_domain does not tag a template object
-    with that itself; inspect the returned object's own id/ref_types, or
-    walk loaded.root directly, if that distinction matters to a caller.
-    There is no instruction_id= filter here: a template's only documented
-    connection to an instruction is indirect, through PNML place/
-    transition/arc topology (place_refs/transition_refs), which is too
-    loosely defined to implement as a keyword filter without a more
-    specific request for it.
+  - get_templates(xml_text, *, kind=None, instruction_id=None): kind,
+    when given, must be one of "material"/"condition"/"result" (anything
+    else raises ValueError) and restricts the result to just that
+    template kind; kind=None (the default) returns all three kinds
+    together, in document order. A template is only ever nested under a
+    program/method/protocol (maiml_domain.protocol.ProgramType/
+    MethodType/ProtocolType's own material_templates/condition_templates/
+    result_templates lists), and each of those three structural levels
+    can define its own, separate templates -- get_templates() does not
+    distinguish which level a given template came from, since
+    maiml_domain does not tag a template object with that itself; inspect
+    the returned object's own id/ref_types, or walk loaded.root directly,
+    if that distinction matters to a caller. instruction_id, when given,
+    restricts the result to templates reachable from that
+    <instruction id="..."> via PNML topology -- see
+    _templates_linked_to_instruction() and get_instances()'s own
+    instruction_id= docstring below for the exact chain and the
+    unknown-id-raises-vs-nothing-linked-returns-[] distinction, which
+    applies here identically.
   - get_instances(xml_text, *, kind=None, instruction_id=None): kind
     works exactly like get_templates()'s, restricting the result to
     "material"/"condition"/"result" (ValueError for anything else),
     default None returns all three kinds. instruction_id, when given,
     restricts the result to instances reachable from that
-    <instruction id="...">: via every <event ref="instruction_id"> in
-    xml_text's eventLog, through that event's own results_refs, to the
-    <results> element(s) those refer to, and finally that <results>
-    element's own materials/conditions/results (in that field order --
-    see maiml_domain.data.ResultsType). This is the only link from an
-    instruction to instances the MaiML schema documents (see
-    maiml_domain.event_log.EventType.ref/results_refs and
-    maiml_domain.data.ResultsType) -- there is no direct
-    instruction-to-instance reference. instruction_id must name an
-    <instruction> that actually exists in xml_text or this raises
-    ValueError (a typo'd id is a mistake worth failing loudly on); an
-    instruction_id that does exist but has no events/instances linked to
-    it (yet) is not an error and returns an empty list -- those are two
-    different, deliberately distinguished situations. A
+    <instruction id="..."> via either of two paths, unioned together:
+      1. instruction -> event -> results_refs -> results -> instances:
+         via every <event ref="instruction_id"> in xml_text's eventLog,
+         through that event's own results_refs, to the <results>
+         element(s) those refer to, and finally that <results> element's
+         own materials/conditions/results (see maiml_domain.event_log.
+         EventType.ref/results_refs and maiml_domain.data.ResultsType).
+         This is "which instances this instruction's execution actually
+         recorded".
+      2. instruction -> transitionRef -> transition -> arc -> place ->
+         template -> instances whose .ref names that template: the same
+         PNML topology chain get_templates()'s instruction_id= walks
+         (maiml_domain.pnml.ArcType/PlaceType, maiml_domain.ref_types.
+         TransitionRefType/PlaceRefType), one hop further to every
+         instance of a template reachable that way. This is "which
+         instances belong to a template this instruction's transitions
+         are wired to", regardless of whether any event has recorded one.
+    There is no other, direct instruction-to-instance reference in the
+    MaiML schema -- these two chains are the only ones. instruction_id
+    must name an <instruction> that actually exists in xml_text or this
+    raises ValueError (a typo'd id is a mistake worth failing loudly on);
+    an instruction_id that does exist but has nothing reachable via
+    either path (yet) is not an error and returns an empty list -- those
+    are two different, deliberately distinguished situations. A
     ProtocolFileRootType document (a protocol-only file, no <data> or
     <eventLog> -- see maiml_domain.root) has no instances at all, so
     get_instances() on one always returns [] regardless of kind/
     instruction_id -- a legitimate instruction_id there still resolves
-    without raising (protocol-only files still have <instruction>
-    elements), it just always finds zero linked events, since there is no
-    eventLog at all to hold one; only an unknown instruction_id raises
-    ValueError there, same as for any other file.
+    without raising, and path 2's templates can still be found, it just
+    never finds an actual instance object to return; only an unknown
+    instruction_id raises ValueError there, same as for any other file.
+    get_templates() on a protocol-only file works normally, including
+    with instruction_id=, since the whole chain it uses lives under
+    <protocol>.
 
 Every maiml_domain object is a plain Python object (or dataclass) whose
 own __init__ assigns its declared attributes in the same order its
@@ -238,6 +252,49 @@ def _parse_root(xml_text: Union[str, bytes]):
     only by get_namespaces() -- see the module docstring."""
     data = xml_text.encode("utf-8") if isinstance(xml_text, str) else xml_text
     return etree.fromstring(data, parser=make_untrusted_input_parser())
+
+
+def _find_instruction(all_objs: List[object], instruction_id: str, fn_name: str) -> "m.InstructionType":
+    """Look up the InstructionType with id == instruction_id among all_objs,
+    or raise ValueError naming fn_name -- shared by get_templates()'s and
+    get_instances()'s instruction_id= handling so both fail the same way on
+    a typo'd id."""
+    for obj in all_objs:
+        if isinstance(obj, m.InstructionType) and obj.id == instruction_id:
+            return obj
+    raise ValueError(f"{fn_name}(): no <instruction id={instruction_id!r}> found in xml_text")
+
+
+def _templates_linked_to_instruction(instruction: "m.InstructionType", all_objs: List[object]) -> List[object]:
+    """Every template (MaterialTemplateType/ConditionTemplateType/
+    ResultTemplateType) reachable from `instruction` via PNML topology:
+    instruction.transition_refs -> the TransitionType(s) they name -> every
+    <arc> touching one of those transitions -> the PlaceType on the arc's
+    other end -> every template whose own place_refs names that place.
+
+    An arc's source/target can be either a place or a transition id
+    (ArcType does not distinguish -- see maiml_domain.pnml), so this checks
+    both ends of every arc against the instruction's transition ids and
+    takes whichever end matched as the candidate place id; a transition
+    id accidentally picked up this way would simply match no template's
+    place_refs; and is used only by get_templates()/get_instances()'s
+    instruction_id= filter, shared so both walk the exact same path.
+    """
+    transition_ids = {tref.ref for tref in instruction.transition_refs}
+    place_ids: Set[str] = set()
+    for obj in all_objs:
+        if isinstance(obj, m.ArcType):
+            if obj.source in transition_ids:
+                place_ids.add(obj.target)
+            if obj.target in transition_ids:
+                place_ids.add(obj.source)
+    template_classes = tuple(_TEMPLATE_CLASSES.values())
+    return [
+        obj
+        for obj in all_objs
+        if isinstance(obj, template_classes)
+        and any(place_ref.ref in place_ids for place_ref in obj.place_refs)
+    ]
 
 
 def get_uuids(xml_text: Union[str, bytes]) -> List[str]:
@@ -380,7 +437,12 @@ def get_insertion_uris(xml_text: Union[str, bytes]) -> List[str]:
     return list(dict.fromkeys(values))
 
 
-def get_templates(xml_text: Union[str, bytes], *, kind: Optional[str] = None) -> List[object]:
+def get_templates(
+    xml_text: Union[str, bytes],
+    *,
+    kind: Optional[str] = None,
+    instruction_id: Optional[str] = None,
+) -> List[object]:
     """
     Every material/condition/resultTemplate in xml_text's maiml_domain
     object tree (loads(xml_text).root), in document order, as the actual
@@ -400,19 +462,42 @@ def get_templates(xml_text: Union[str, bytes], *, kind: Optional[str] = None) ->
     walks all of them without distinguishing which level a given result
     came from (maiml_domain does not tag a template object with that
     itself); compare returned objects' .id/template_refs, or walk
-    loaded.root directly, if that distinction matters. There is no
-    instruction_id= filter: a template's only documented connection to an
-    instruction is indirect, through PNML place/transition/arc topology,
-    which is too loosely defined to implement as a keyword filter here
-    (see the module docstring).
+    loaded.root directly, if that distinction matters.
+
+    instruction_id, if given, restricts the result to templates reachable
+    from the <instruction id=instruction_id> via PNML topology: every
+    <transitionRef> the instruction names -> the <transition>(s) those
+    identify -> every <arc> touching one of those transitions -> the
+    <place> on the arc's other end -> every template whose own
+    <placeRef> names that place (see maiml_domain.pnml.ArcType/PlaceType,
+    maiml_domain.ref_types.TransitionRefType/PlaceRefType). This is the
+    only link from an instruction to a template the MaiML schema
+    documents -- there is no direct instruction-to-template reference.
+    instruction_id must name an <instruction> that actually exists
+    somewhere in xml_text, or this raises ValueError (a typo'd id is a
+    mistake worth failing loudly on); an instruction_id that does exist
+    but has no template reachable from it (yet) is not an error and
+    returns [] instead -- see get_instances()'s docstring for the same
+    distinction spelled out in more detail, it applies here identically.
+    This works on a protocolFileRootType (a protocol-only file -- see
+    maiml_domain.root.ProtocolFileRootType) exactly as well as on a full
+    maimlRootType, since the whole chain lives under <protocol>, not
+    under <data>/<eventLog>.
 
     xml_text must be schema-valid MaiML: this calls
     pymaiml.serialization.loads(xml_text) and raises whatever loads()
     raises for anything else (see the module docstring).
     """
     loaded = serialization.loads(xml_text)
+    all_objs = list(_iter_domain_objects(loaded.root))
     classes = _kind_classes(_TEMPLATE_CLASSES, kind)
-    return [obj for obj in _iter_domain_objects(loaded.root) if isinstance(obj, classes)]
+
+    if instruction_id is None:
+        return [obj for obj in all_objs if isinstance(obj, classes)]
+
+    instruction = _find_instruction(all_objs, instruction_id, "get_templates")
+    linked = _templates_linked_to_instruction(instruction, all_objs)
+    return [obj for obj in linked if isinstance(obj, classes)]
 
 
 def get_instances(
@@ -435,33 +520,42 @@ def get_instances(
     anything else), or the default None for all three kinds together.
 
     instruction_id, if given, restricts the result to instances reachable
-    from the <instruction id=instruction_id> in xml_text: via every
-    <event ref=instruction_id> in its eventLog, through that event's own
-    results_refs, to the <results> element(s) they refer to, and finally
-    that <results> element's own materials/conditions/results (see
-    maiml_domain.event_log.EventType and maiml_domain.data.ResultsType).
-    This is the only link from an instruction to instances the MaiML
-    schema documents -- there is no direct instruction-to-instance
-    reference, only this instruction -> event -> results -> instance
-    chain.
+    from the <instruction id=instruction_id> in xml_text via either of two
+    independent paths, unioned together (an instance reachable via both is
+    listed once):
+
+      1. instruction -> event: every <event ref=instruction_id> in
+         xml_text's eventLog, through that event's own results_refs, to
+         the <results> element(s) they refer to, and finally that
+         <results> element's own materials/conditions/results (see
+         maiml_domain.event_log.EventType and maiml_domain.data.
+         ResultsType). This is "which instances were actually recorded
+         as the outcome of running this instruction".
+      2. instruction -> PNML topology: the same instruction ->
+         transitionRef -> transition -> arc -> place -> template chain
+         get_templates()'s instruction_id= uses (see its docstring), one
+         hop further to every instance whose own .ref names one of those
+         templates. This is "which instances are of a template this
+         instruction's transitions are wired to", independent of whether
+         any event has actually recorded one yet.
 
     instruction_id must name an <instruction> that actually exists
     somewhere in xml_text, or this raises ValueError -- a typo'd id is a
     mistake worth failing loudly on, not silently returning []. An
-    instruction_id that does exist but has no events/instances linked to
-    it (yet) is not an error: that returns [], deliberately distinct from
-    the ValueError case above.
+    instruction_id that does exist but has nothing reachable via either
+    path (yet) is not an error: that returns [], deliberately distinct
+    from the ValueError case above.
 
     A protocolFileRootType document (a protocol-only file -- see
     maiml_domain.root.ProtocolFileRootType, which has no data/eventLog at
     all) has no instances to find, so get_instances() on one always
     returns [] regardless of kind or instruction_id -- a legitimate
     instruction_id there still resolves without raising (the
-    <instruction> itself is still present), it just always finds zero
-    linked events (there is no eventLog at all to hold one) and so
-    returns []; only an instruction_id that does not match any
-    <instruction> in the file raises ValueError, exactly as for any other
-    file.
+    <instruction> itself is still present, and path 2's templates can
+    still be found), it just never finds any actual instance object to
+    return (there is no <data> at all to hold one); only an
+    instruction_id that does not match any <instruction> in the file
+    raises ValueError, exactly as for any other file.
 
     xml_text must be schema-valid MaiML: this calls
     pymaiml.serialization.loads(xml_text) and raises whatever loads()
@@ -474,24 +568,32 @@ def get_instances(
     if instruction_id is None:
         return [obj for obj in all_objs if isinstance(obj, classes)]
 
-    instruction_ids = {obj.id for obj in all_objs if isinstance(obj, m.InstructionType)}
-    if instruction_id not in instruction_ids:
-        raise ValueError(
-            f"get_instances(): no <instruction id={instruction_id!r}> found in xml_text"
-        )
+    instruction = _find_instruction(all_objs, instruction_id, "get_instances")
 
+    # Path 1: instruction -> event -> results_refs -> results -> instances.
     results_ids = {
         results_ref.ref
         for obj in all_objs
         if isinstance(obj, m.EventType) and obj.ref == instruction_id
         for results_ref in obj.results_refs
     }
+    ids_via_events = {
+        inst.id
+        for obj in all_objs
+        if isinstance(obj, m.ResultsType) and obj.id in results_ids
+        for inst in (obj.materials + obj.conditions + obj.results)
+    }
 
-    instances: List[object] = []
-    for obj in all_objs:
-        if isinstance(obj, m.ResultsType) and obj.id in results_ids:
-            instances.extend(obj.materials)
-            instances.extend(obj.conditions)
-            instances.extend(obj.results)
+    # Path 2: instruction -> transitionRef -> transition -> arc -> place ->
+    # template -> instances whose .ref names that template (see
+    # _templates_linked_to_instruction() and get_templates()'s docstring).
+    template_ids = {t.id for t in _templates_linked_to_instruction(instruction, all_objs)}
+    instance_classes = tuple(_INSTANCE_CLASSES.values())
+    ids_via_topology = {
+        obj.id
+        for obj in all_objs
+        if isinstance(obj, instance_classes) and obj.ref in template_ids
+    }
 
-    return [obj for obj in instances if isinstance(obj, classes)]
+    matched_ids = ids_via_events | ids_via_topology
+    return [obj for obj in all_objs if isinstance(obj, classes) and obj.id in matched_ids]
