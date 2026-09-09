@@ -466,6 +466,28 @@ pip install --no-deps -e .
   `[]`を返します(実在する`instruction_id`を渡してもエラーにはならず、
   単に返せるインスタンスが無いだけです)。
 
+## ドキュメント
+
+各モジュールのdocstringから生成するAPI Reference(MkDocs +
+[mkdocstrings](https://mkdocstrings.github.io/))を`docs/`配下に用意して
+います。このREADME.md・CHANGELOG.md・CONTRIBUTING.mdは、そのままの内容を
+`pymdownx.snippets`でAPI Referenceサイトに取り込んで表示する(`docs/index.md`
+などが`--8<-- "README.md"`のように参照する)ため、内容を二重管理する必要は
+ありません。
+
+ローカルでビルド・プレビューする場合(リポジトリ直下で実行してください):
+
+```bash
+pip install -e ".[docs]"
+mkdocs serve  # http://127.0.0.1:8000 でプレビュー
+```
+
+`main`ブランチへのpush時に`.github/workflows/docs.yml`がビルド結果を
+`gh-pages`ブランチへ自動デプロイします。リポジトリのSettings > Pagesで
+公開ソースを`gh-pages`ブランチに設定すると、
+https://maiml-library.github.io/PyMaiML/ で閲覧できるようになります
+(このリポジトリではまだGitHub Pages自体を有効化していません)。
+
 ## テスト
 
 ```bash

@@ -52,5 +52,8 @@ dmypy.json
 .DS_Store
 Thumbs.db
 
+# MkDocs build output (`mkdocs build`) -- generated, not checked in
+site/
+
 # scratch: files staged for manual deletion via Finder
 _to_delete/

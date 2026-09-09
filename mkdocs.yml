@@ -1,0 +1,92 @@
+site_name: PyMaiML
+site_description: "MaiML (JIS K 0200) Python SDK -- API Reference"
+site_url: https://maiml-library.github.io/PyMaiML/
+repo_url: https://github.com/MaiML-Library/PyMaiML
+repo_name: MaiML-Library/PyMaiML
+edit_uri: edit/main/docs/
+
+# README.md / CHANGELOG.md / CONTRIBUTING.md は日本語で書かれており、この
+# サイトは pymdownx.snippets でそれらをそのまま取り込んで表示する(内容を
+# 二重管理しないための方針 -- README.mdの「ドキュメント」節を参照)。
+# UIラベルも合わせて日本語にしておく。
+theme:
+  name: material
+  language: ja
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      primary: indigo
+      toggle:
+        icon: material/brightness-7
+        name: ダークモードに切り替え
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      primary: indigo
+      toggle:
+        icon: material/brightness-4
+        name: ライトモードに切り替え
+  features:
+    - navigation.instant
+    - navigation.tracking
+    - navigation.top
+    - navigation.indexes
+    - content.code.copy
+    - content.action.edit
+    - search.suggest
+    - search.highlight
+
+nav:
+  - はじめに: index.md
+  - API Reference:
+      - pymaiml.serialization: api/serialization.md
+      - pymaiml.validation: api/validation.md
+      - pymaiml.builders: api/builders.md
+      - pymaiml.query: api/query.md
+  - CHANGELOG: changelog.md
+  - Contributing: CONTRIBUTING.md
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - pymdownx.details
+  - pymdownx.superfences
+  - pymdownx.inlinehilite
+  - pymdownx.highlight:
+      anchor_linenums: true
+  - pymdownx.snippets:
+      # README.md/CHANGELOG.md/CONTRIBUTING.mdはリポジトリ直下(mkdocs.yml
+      # と同じ場所)にあるため、base_pathをそこに向ける。mkdocs build/serve
+      # をリポジトリ直下から実行する前提(README.mdの「ドキュメント」節参照)。
+      base_path: ["."]
+      check_paths: true
+  - toc:
+      permalink: true
+
+plugins:
+  - search
+  - mkdocstrings:
+      handlers:
+        python:
+          # pymaimlパッケージのソースをリポジトリ直下から静的解析
+          # (griffe)で読み取る -- ここではimport不要のため、maiml_domain/
+          # lxmlが未インストールでもビルドできる。
+          paths: ["."]
+          options:
+            # 各docstringはGoogle形式のセクション見出し(Args:/Returns:等)
+            # を使わず、地の文で「何を・なぜ」を説明する方針で書かれている
+            # ため、Google/NumPy/Sphinxいずれのパーサーにも寄せず、
+            # docstring全文をそのままMarkdownとして表示する。
+            docstring_style: null
+            show_source: true
+            show_root_heading: true
+            show_root_full_path: false
+            separate_signature: true
+            show_signature_annotations: true
+            signature_crossrefs: true
+            merge_init_into_class: true
+            members_order: source
+            show_bases: true
+            group_by_category: true
+            filters:
+              - "!^_"

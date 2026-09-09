@@ -809,6 +809,32 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   ことを検証するテストを追加しました。
 
 
+- **MkDocs + mkdocstringsによるAPI Reference一式(`mkdocs.yml`・`docs/`)を
+  追加しました。** `pymaiml.serialization`/`validation`/`builders`/`query`の
+  各モジュールのdocstringから自動生成する構成で、`create_instance()`/
+  `create_instances()`のような長文docstring(「何を・なぜ」まで説明する
+  地の文スタイル)も書き換えずそのままAPI Referenceの本文として使えます
+  (`mkdocs.yml`で`docstring_style: null`を指定し、Google/NumPy/Sphinx
+  いずれのセクション見出し形式への統一も要求していません)。各モジュールが
+  既に定義している`__all__`をmkdocstrings-pythonがそのまま公開APIの一覧
+  として使うため、`_`始まりの内部ヘルパー関数(`_build_instance_content()`
+  等)は表示されません。
+
+  README.md・CHANGELOG.md・CONTRIBUTING.mdは`pymdownx.snippets`で
+  そのまま取り込んで表示する構成にしており(`docs/index.md`が
+  `--8<-- "README.md"`のように参照するだけ)、内容の二重管理は発生し
+  ません。
+
+  `pyproject.toml`に`docs` extra(`mkdocs`/`mkdocs-material`/
+  `mkdocstrings[python]`)を追加し、`.github/workflows/docs.yml`で
+  push/pull_request時に`mkdocs build --strict`によるビルド確認、
+  `main`ブランチへのpush時に`gh-pages`ブランチへの自動デプロイを行い
+  ます(リポジトリ側でのGitHub Pages有効化(Settings > Pages)は別途
+  必要です)。ローカルでのビルド・プレビュー手順はREADME.mdの
+  「ドキュメント」節に追加しました。`.gitignore`に`mkdocs build`の
+  生成物`site/`を追加しています。
+
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。
