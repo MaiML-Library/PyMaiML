@@ -29,13 +29,22 @@ XXE/entity-expansion/network-resource hardening loads() uses, since a
 "just list what's in this file" utility is exactly the kind of thing that
 gets pointed at untrusted/uploaded input.
 
-Each of the three list-returning functions preserves first-appearance
-(document) order and removes duplicates -- the second and later
-occurrences of an already-seen value are dropped, not the first. This
-matters in practice: MaiML-Schema-1_0 does not enforce key= uniqueness
-even within the same parent element (see pymaiml/README.md), so recording
-the same key= multiple times (e.g. a repeated measurement) is normal, and
-get_keys() reports the distinct keys used, not one entry per occurrence.
+get_keys() and get_insertion_uris() preserve first-appearance (document)
+order and remove duplicates -- the second and later occurrences of an
+already-seen value are dropped, not the first. This matters in practice:
+MaiML-Schema-1_0 does not enforce key= uniqueness even within the same
+parent element (see pymaiml/README.md), so recording the same key=
+multiple times (e.g. a repeated measurement) is normal, and get_keys()
+reports the distinct keys used, not one entry per occurrence.
+
+get_uuids() is the exception: it returns every occurrence, in document
+order, WITHOUT removing duplicates. A repeated key= or a repeated
+insertion URI is unremarkable, but a uuid exists specifically to identify
+one object uniquely, so the same uuid appearing more than once is itself
+something worth being able to see -- silently collapsing it away would
+hide exactly the kind of thing a caller may be using this function to
+catch (e.g. via collections.Counter(get_uuids(xml_text)) or by comparing
+len(get_uuids(xml_text)) to len(set(get_uuids(xml_text)))).
 """
 from __future__ import annotations
 
@@ -64,8 +73,14 @@ def _parse_root(xml_text: Union[str, bytes]):
 
 def get_uuids(xml_text: Union[str, bytes]) -> List[str]:
     """
-    Every <uuid> element's text in xml_text, in document order, with
-    duplicates removed (first occurrence kept).
+    Every <uuid> element's text in xml_text, in document order, INCLUDING
+    duplicates -- unlike get_keys()/get_insertion_uris(), this does not
+    deduplicate. A uuid is meant to uniquely identify one object, so a
+    uuid that appears more than once is a fact about the file worth being
+    able to observe (e.g. two distinct objects that were accidentally
+    given the same identity), and deduplicating here would hide it. If you
+    want the distinct set instead, wrap the result yourself, e.g.
+    set(get_uuids(xml_text)) or list(dict.fromkeys(get_uuids(xml_text))).
 
     Walks the whole tree, so this includes every kind of <uuid> the
     schema uses this element name for: a globalObjectContentGroup's own
@@ -78,12 +93,11 @@ def get_uuids(xml_text: Union[str, bytes]) -> List[str]:
     uuid string is still listed rather than raising.
     """
     root = _parse_root(xml_text)
-    values = [
+    return [
         el.text.strip()
         for el in root.iter()
         if _local_name(el.tag) == "uuid" and el.text and el.text.strip()
     ]
-    return list(dict.fromkeys(values))
 
 
 def get_keys(xml_text: Union[str, bytes]) -> List[str]:

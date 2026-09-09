@@ -264,18 +264,24 @@ pip install --no-deps -e .
   from pymaiml import query
 
   xml_text = open("sample.maiml", "rb").read()
-  query.get_uuids(xml_text)           # -> List[str]  (<uuid>要素のテキスト)
+  query.get_uuids(xml_text)           # -> List[str]  (<uuid>要素のテキスト、重複含む全件)
   query.get_keys(xml_text)            # -> List[str]  (key=属性値)
   query.get_namespaces(xml_text)      # -> Dict[str, str]  ({接頭辞: URI})
   query.get_insertion_uris(xml_text)  # -> List[str]  (<insertion>/<uri>のテキスト)
   ```
 
-  4関数とも出現順を保持しつつ重複を除去した結果を返します(`get_namespaces`
-  は`dict`なので、キーの挿入順がそのまま出現順になります)。`get_uuids()`は
-  `<uuid>`という要素名が使われる箇所すべて(オブジェクトの識別uuid・
-  `insertion`自身のuuid・`chain`/`parent`のuuid)を区別せず一括で拾い、
-  `get_keys()`も同様に`<property>`/`<content>`/`<chain>`/`<parent>`の
-  `key`属性をまとめて拾います。`get_namespaces()`は
+  4関数とも出現順を保持しますが、重複の扱いは`get_uuids()`だけ異なります。
+  `get_keys()`/`get_insertion_uris()`/`get_namespaces()`は重複を除去した
+  結果を返します(`get_namespaces`は`dict`なので、キーの挿入順がそのまま
+  出現順になります)。一方`get_uuids()`は重複を除去せず、出現した
+  `<uuid>`要素のテキストを全件そのまま返します。`uuid`は本来オブジェクトを
+  一意に識別するためのものなので、同じ値が複数回出現すること自体が
+  検出したい事実になり得るためです(重複除去した一覧が欲しい場合は
+  呼び出し側で`set(...)`や`dict.fromkeys(...)`を使ってください)。
+  `get_uuids()`は`<uuid>`という要素名が使われる箇所すべて(オブジェクトの
+  識別uuid・`insertion`自身のuuid・`chain`/`parent`のuuid)を区別せず
+  一括で拾い、`get_keys()`も同様に`<property>`/`<content>`/`<chain>`/
+  `<parent>`の`key`属性をまとめて拾います。`get_namespaces()`は
   `LoadedMaiml.namespaces`(ルート`<maiml>`要素のみ走査)とは異なり木全体を
   走査するため、`pymaiml`の`dumps()`を経由していない外部生成ファイル
   (例: ルート以外の要素に`xmlns:ds`を宣言したまま署名されたファイル)でも

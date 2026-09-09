@@ -402,7 +402,8 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   ユーティリティ群として、以下4関数を提供します。
   - `get_uuids(xml_text)` -- `<uuid>`要素のテキストを一覧取得
     (出現箇所の種類を問わない: オブジェクトの識別uuid、`insertion`
-    自身のuuid、`chain`/`parent`のuuidをすべて含む)
+    自身のuuid、`chain`/`parent`のuuidをすべて含む)。**重複除去はしない**
+    (下記参照)。
   - `get_keys(xml_text)` -- `key=`属性値を一覧取得
     (`<property>`/`<content>`/`<chain>`/`<parent>`のいずれも対象)
   - `get_namespaces(xml_text)` -- 宣言されているカスタム名前空間を
@@ -410,9 +411,16 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   - `get_insertion_uris(xml_text)` -- `<insertion>/<uri>`のテキストを
     一覧取得(外部ファイル参照のURI)
 
-  リスト系の3関数はいずれも出現順を保持しつつ重複を除去します
-  (`dict.fromkeys()`による先頭優先の重複除去)。`get_namespaces()`は
-  `dict`を返すため、キーの挿入順がそのまま出現順になります。
+  リスト系関数はいずれも出現順を保持しますが、重複の扱いは`get_uuids()`
+  だけ異なります。`get_keys()`/`get_insertion_uris()`は出現順を保持しつつ
+  重複を除去します(`dict.fromkeys()`による先頭優先の重複除去)。
+  `get_namespaces()`は`dict`を返すため、キーの挿入順がそのまま出現順に
+  なります。一方`get_uuids()`は重複を除去せず、出現した`<uuid>`要素の
+  テキストを全件そのまま返します(ユーザー指摘により変更)。`uuid`は本来
+  オブジェクトを一意に識別するためのものであり、同じ値が複数回出現する
+  こと自体が検出したい事実になり得るためです。重複除去した一覧が必要な
+  場合は呼び出し側で`set(...)`や`list(dict.fromkeys(...))`を使うことを
+  想定しています。
 
   設計上の要点は次のとおりです。
   - `pymaiml.serialization.loads()`を経由しません。`loads()`はスキーマ

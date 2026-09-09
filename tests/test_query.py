@@ -19,7 +19,11 @@ from pymaiml.builders import LIFECYCLE_NS
 # get_uuids()
 # ---------------------------------------------------------------------------
 
-def test_get_uuids_dedupes_and_preserves_first_occurrence_order():
+def test_get_uuids_preserves_document_order_and_keeps_duplicates():
+    """Unlike get_keys()/get_insertion_uris(), get_uuids() does NOT
+    deduplicate: a repeated uuid is itself a fact worth surfacing (two
+    objects sharing an identity that is supposed to be unique), so every
+    occurrence is reported, in document order, duplicates included."""
     xml = """<root>
   <a><uuid>11111111-1111-1111-1111-111111111111</uuid></a>
   <b><uuid>22222222-2222-2222-2222-222222222222</uuid></b>
@@ -29,6 +33,7 @@ def test_get_uuids_dedupes_and_preserves_first_occurrence_order():
     assert query.get_uuids(xml) == [
         "11111111-1111-1111-1111-111111111111",
         "22222222-2222-2222-2222-222222222222",
+        "11111111-1111-1111-1111-111111111111",
     ]
 
 
@@ -41,7 +46,6 @@ def test_get_uuids_finds_uuids_in_a_real_dumps_output(minimal_root):
     xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
     uuids = query.get_uuids(xml)
     assert str(minimal_root.document.content.uuid) in uuids
-    assert len(uuids) == len(set(uuids))  # already deduped
 
 
 # ---------------------------------------------------------------------------
