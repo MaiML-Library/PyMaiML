@@ -408,9 +408,7 @@ def test_create_instance_regenerates_insertions_with_new_uri_and_hash(id_factory
     template = _material_template(id_factory, "template-A", insertions=[old_insertion])
 
     new_value = InsertionValue(uri="file://instance-001.csv", hash=m.HashType(value=b"1" * 32, method="SHA-256"))
-    instance = create_instance(
-        template, id="material1", id_factory=id_factory, insertion_values={"file://template.csv": new_value}
-    )
+    instance = create_instance(template, id="material1", id_factory=id_factory, insertion_values=[new_value])
 
     new_insertion = instance.content.insertions[0]
     assert new_insertion.uri == "file://instance-001.csv"
@@ -432,21 +430,64 @@ def test_create_instance_insertion_value_can_override_format_and_uuid(id_factory
         uuid=explicit_uuid,
         format="application/json",
     )
-    instance = create_instance(
-        template, id="material1", id_factory=id_factory, insertion_values={"file://template.csv": new_value}
-    )
+    instance = create_instance(template, id="material1", id_factory=id_factory, insertion_values=[new_value])
 
     new_insertion = instance.content.insertions[0]
     assert new_insertion.format == "application/json"
     assert new_insertion.uuid is explicit_uuid
 
 
-def test_create_instance_missing_insertion_value_raises(id_factory):
+def test_create_instance_insertions_are_matched_to_insertion_values_by_position(id_factory):
+    # The whole point of matching by position rather than by uri: two
+    # template insertions may legitimately share the same uri (schema
+    # does not require uri to be unique among one content's insertions),
+    # and each must still get its own distinct new uri/hash.
+    old_a = m.InsertionType(uri="data.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    old_b = m.InsertionType(uri="data.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    template = _material_template(id_factory, "template-A", insertions=[old_a, old_b])
+
+    value_a = InsertionValue(uri="file://instance-a.csv", hash=m.HashType(value=b"1" * 32))
+    value_b = InsertionValue(uri="file://instance-b.csv", hash=m.HashType(value=b"2" * 32))
+    instance = create_instance(
+        template, id="material1", id_factory=id_factory, insertion_values=[value_a, value_b]
+    )
+
+    assert instance.content.insertions[0].uri == "file://instance-a.csv"
+    assert instance.content.insertions[1].uri == "file://instance-b.csv"
+
+
+def test_create_instance_missing_insertion_values_raises(id_factory):
     old_insertion = m.InsertionType(uri="file://template.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
     template = _material_template(id_factory, "template-A", insertions=[old_insertion])
 
-    with pytest.raises(ValueError, match=r"file://template\.csv"):
+    with pytest.raises(ValueError, match="insertion_values was not supplied"):
         create_instance(template, id="material1", id_factory=id_factory)
+
+
+def test_create_instance_insertion_values_length_mismatch_raises(id_factory):
+    old_a = m.InsertionType(uri="file://a.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    old_b = m.InsertionType(uri="file://b.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    template = _material_template(id_factory, "template-A", insertions=[old_a, old_b])
+
+    only_one_value = [InsertionValue(uri="file://instance-a.csv", hash=m.HashType(value=b"1" * 32))]
+    with pytest.raises(ValueError, match="exactly one entry"):
+        create_instance(template, id="material1", id_factory=id_factory, insertion_values=only_one_value)
+
+    too_many_values = [
+        InsertionValue(uri="file://instance-a.csv", hash=m.HashType(value=b"1" * 32)),
+        InsertionValue(uri="file://instance-b.csv", hash=m.HashType(value=b"2" * 32)),
+        InsertionValue(uri="file://instance-c.csv", hash=m.HashType(value=b"3" * 32)),
+    ]
+    with pytest.raises(ValueError, match="exactly one entry"):
+        create_instance(template, id="material1", id_factory=id_factory, insertion_values=too_many_values)
+
+
+def test_create_instance_ignores_insertion_values_when_template_has_no_insertions(id_factory):
+    # A template with zero insertions needs no insertion_values at all --
+    # confirms the empty case short-circuits before the length check.
+    template = _material_template(id_factory, "template-A", insertions=[])
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+    assert instance.content.insertions == []
 
 
 def test_create_instance_translates_template_refs_to_instance_refs_via_map(id_factory):
@@ -604,7 +645,7 @@ def test_create_instances_missing_reference_raises_even_across_the_whole_batch(i
         create_instances([template_a, template_b], id_factory=id_factory)
 
 
-def test_create_instances_insertion_values_are_keyed_by_template_id_then_uri(id_factory):
+def test_create_instances_insertion_values_are_keyed_by_template_id_then_positional(id_factory):
     old_insertion = m.InsertionType(uri="file://template.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
     template = _material_template(id_factory, "template-A", insertions=[old_insertion])
 
@@ -612,7 +653,7 @@ def test_create_instances_insertion_values_are_keyed_by_template_id_then_uri(id_
         [template],
         id_factory=id_factory,
         insertion_values={
-            "template-A": {"file://template.csv": InsertionValue(uri="file://instance.csv", hash=m.HashType(value=b"1" * 32))}
+            "template-A": [InsertionValue(uri="file://instance.csv", hash=m.HashType(value=b"1" * 32))]
         },
     )
 

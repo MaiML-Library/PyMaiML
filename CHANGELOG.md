@@ -756,6 +756,59 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   「この実装をお願いします」)への対応です。
 
 
+- **`pymaiml.builders.create_instance()`/`create_instances()`の
+  `insertion_values`引数を、Template側`insertion`の旧`uri`をキーにした
+  `Mapping`から、`template.content.insertions`と同じ順序で対応付ける
+  `Sequence[InsertionValue]`へ変更しました。**
+  設計修正案`PyMaiML_insertion_mapping_revision.md`への対応です。
+
+  変更前は`insertion_values`を`{旧uri: InsertionValue(...), ...}`という
+  辞書として渡し、内部で`insertion_values.get(old.uri)`のように
+  Template側`InsertionType.uri`をキーとして対応するInstance用の新しい
+  `uri`/`hash`を探していました。しかしMaiML-Schema-1_0は、1つの汎用
+  データコンテナ内に複数の`insertion`が存在する場合でも`uri`の一意性を
+  一切保証していません(`genericDataContainerGroup`のスキーマ定義上、
+  同じ`uri`を持つ`insertion`が2つ以上存在することを妨げるものはあり
+  ません)。`InsertionType`自体も`id`を持たないため、`uri`をキーにした
+  対応付けは、同じ`uri`を持つ`insertion`が複数存在するケースで、
+  どちらのInstance用の値がどちらのTemplate側`insertion`に対応するのかを
+  一意に決定できないという欠陥がありました。
+
+  修正後は、`insertion_values`を`Sequence[InsertionValue]`として受け取り、
+  `template.content.insertions`と`zip()`して**出現順序(位置)**で対応
+  付けます(`insertion_values[0]`は`template.content.insertions[0]`、
+  `insertion_values[1]`は`template.content.insertions[1]`、という具合)。
+  `InsertionType`にはそもそも順序以外に安定した識別子が無いため、
+  スキーマが実際に保証している「出現順序」だけを対応付けの根拠にする
+  方針です。
+
+  ``` text
+  Mapping[旧uri, InsertionValue]
+          ↓
+  Sequence[InsertionValue]  (template.content.insertionsと同じ順序)
+  ```
+
+  `create_instances()`側の`insertion_values`は、Template IDをキーにした
+  第1階層はそのまま維持し、値の型だけ`Mapping[str, InsertionValue]`から
+  `Sequence[InsertionValue]`に変更しています
+  (`Mapping[template_id, Sequence[InsertionValue]]`)。
+
+  Template側`insertion`の個数と`insertion_values`の要素数が一致しない
+  場合(不足・過剰いずれも)、およびTemplateに`insertion`があるのに
+  `insertion_values`自体を渡さなかった場合は、これまでどおり
+  `ValueError`になります(不足分を推測したり、Template側の`uri`/`hash`
+  をそのまま使い回したりはしません)。Templateに`insertion`が1つも無い
+  場合は`insertion_values`を省略でき(渡しても無視されます)、この
+  ショートサーキットは変更前から変わりません。`uuid`省略時の新規生成・
+  `format`省略時のTemplate側からの継承という既存の挙動も変更していません。
+
+  `tests/test_builders.py`に、同じ`uri`を持つ2つの`insertion`が存在する
+  場合でも位置によって正しく異なる新しい`uri`/`hash`に対応付けられる
+  ことを検証する回帰テスト、および`insertion_values`の要素数が
+  Template側`insertion`の個数と一致しない場合に`ValueError`になる
+  ことを検証するテストを追加しました。
+
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

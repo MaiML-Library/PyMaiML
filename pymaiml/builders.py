@@ -621,45 +621,66 @@ class InsertionValue:
 
 
 def _build_instance_insertions(
-    template_insertions: List["m.InsertionType"],
+    template_insertions: Sequence["m.InsertionType"],
     *,
     id_factory: IdFactory,
-    insertion_values: Optional[Mapping[str, InsertionValue]],
+    insertion_values: Optional[Sequence[InsertionValue]],
 ) -> List["m.InsertionType"]:
     """Rebuild `template_insertions` as new InsertionType objects for an
-    instance, using insertion_values (keyed by the template insertion's own
-    uri -- InsertionType has no id of its own to key by) to supply each
-    one's new uri/hash. Raises ValueError naming the uri if a template
-    insertion has no matching entry -- see InsertionValue's docstring for
-    why an instance's insertion can never just reuse the template's."""
-    result: List["m.InsertionType"] = []
-    for old in template_insertions:
-        value = (insertion_values or {}).get(old.uri)
-        if value is None:
-            raise ValueError(
-                f"create_instance: template has an <insertion uri={old.uri!r}> but "
-                f"insertion_values has no entry for {old.uri!r} -- pass "
-                f"insertion_values={{{old.uri!r}: InsertionValue(uri=..., hash=...), "
-                "...} with a new uri/hash for the instance's own copy of this "
-                "insertion (a template's insertion is never reused as-is -- see "
-                "InsertionValue's docstring)."
-            )
-        result.append(
-            m.InsertionType(
-                uri=value.uri,
-                hash=value.hash,
-                uuid=value.uuid if value.uuid is not None else id_factory.new_uuid(),
-                format=value.format if value.format is not None else old.format,
-            )
+    instance, matching each one to `insertion_values` by POSITION, not by
+    InsertionType.uri: MaiML-Schema-1_0 does not guarantee uri is unique
+    among the insertions of one generic data container (nothing stops two
+    <insertion> elements under the same parent from naming the same uri),
+    so a uri cannot serve as a reliable key -- and InsertionType has no id
+    of its own either. Position in the sequence is therefore the only
+    identifier the schema actually gives: insertion_values[0] supplies the
+    new uri/hash for template_insertions[0], insertion_values[1] for
+    template_insertions[1], and so on, in order.
+
+    insertion_values must have exactly one entry per template insertion --
+    a template with insertions but no insertion_values at all, or a length
+    mismatch between the two, raises ValueError naming the counts (never
+    guesses which entry belongs to which insertion, and never reuses a
+    template insertion's own uri/hash for the ones left over)."""
+    if not template_insertions:
+        return []
+
+    if insertion_values is None:
+        raise ValueError(
+            "create_instance: template has insertion elements, but "
+            "insertion_values was not supplied -- pass a "
+            "Sequence[InsertionValue] with exactly one entry per template "
+            "insertion, in the same order (insertions are matched by "
+            "position, not by uri -- see InsertionValue's docstring)."
         )
-    return result
+
+    if len(template_insertions) != len(insertion_values):
+        raise ValueError(
+            f"create_instance: template has {len(template_insertions)} "
+            f"insertion element(s) but insertion_values has "
+            f"{len(insertion_values)} entry(ies) -- insertion_values must "
+            "contain exactly one entry for each template insertion, in "
+            "the same order (insertions are matched positionally, not by "
+            "uri, since MaiML-Schema-1_0 does not guarantee uri is unique "
+            "among a generic data container's insertions)."
+        )
+
+    return [
+        m.InsertionType(
+            uri=value.uri,
+            hash=value.hash,
+            uuid=value.uuid if value.uuid is not None else id_factory.new_uuid(),
+            format=value.format if value.format is not None else old.format,
+        )
+        for old, value in zip(template_insertions, insertion_values)
+    ]
 
 
 def _build_instance_content(
     template_content: Optional["m.GlobalObjectContent"],
     *,
     id_factory: IdFactory,
-    insertion_values: Optional[Mapping[str, InsertionValue]],
+    insertion_values: Optional[Sequence[InsertionValue]],
 ) -> "m.GlobalObjectContent":
     """The instance's own GlobalObjectContent: a fresh uuid (never the
     template's own identity uuid -- see create_instance()'s docstring),
@@ -749,7 +770,7 @@ def create_instance(
     id: str,
     id_factory: IdFactory,
     template_instance_map: Optional[Mapping[str, str]] = None,
-    insertion_values: Optional[Mapping[str, InsertionValue]] = None,
+    insertion_values: Optional[Sequence[InsertionValue]] = None,
 ) -> Instance:
     """
     Build the material/condition/result instance that `template`
@@ -779,10 +800,13 @@ def create_instance(
         returned instance afterwards can never mutate `template`.
       - template.content's insertions are NOT copied as-is: each becomes a
         brand new InsertionType with a caller-supplied uri/hash (via
-        insertion_values, keyed by the template insertion's own uri -- see
-        InsertionValue's docstring for why the template's uri/hash can
-        never just be reused). A template insertion with no matching
-        insertion_values entry raises ValueError.
+        insertion_values, a Sequence[InsertionValue] matched to
+        template.content.insertions by POSITION -- not by uri, which
+        MaiML-Schema-1_0 does not guarantee is unique among one generic
+        data container's insertions; see InsertionValue's docstring for
+        why the template's uri/hash can never just be reused). A length
+        mismatch between insertion_values and template.content.insertions
+        raises ValueError.
       - template.template_refs become instance.instance_refs, each
         translated via template_instance_map (see _convert_template_refs()
         and template_instance_map's own docstring below) rather than
@@ -826,7 +850,7 @@ def create_instances(
     templates: Sequence[Template],
     *,
     id_factory: IdFactory,
-    insertion_values: Optional[Mapping[str, Mapping[str, InsertionValue]]] = None,
+    insertion_values: Optional[Mapping[str, Sequence[InsertionValue]]] = None,
     existing_instance_map: Optional[Mapping[str, str]] = None,
 ) -> List[Instance]:
     """
@@ -856,12 +880,15 @@ def create_instances(
          from own_ids, the shared template_instance_map from step 2, and
          (if given) that template's own entry from insertion_values.
 
-    insertion_values, if given, is keyed by template.id first and then by
-    each insertion's own uri (see InsertionValue and
-    create_instance()'s insertion_values -- this is create_instance()'s
-    same, single-template-scoped parameter, just nested one level to
-    cover a whole batch of templates that may each have their own
-    insertions to re-key).
+    insertion_values, if given, is keyed by template.id first, and then --
+    for that template -- a Sequence[InsertionValue] matched to its own
+    content.insertions by position (see create_instance()'s
+    insertion_values, and _build_instance_insertions()'s docstring for why
+    position, not uri, is what identifies one insertion: MaiML-Schema-1_0
+    does not guarantee uri is unique among a generic data container's
+    insertions). This is create_instance()'s same, single-template-scoped
+    parameter, just nested one level to cover a whole batch of templates
+    that may each have their own insertions.
 
     existing_instance_map, if given, supplies instance ids for templates
     OUTSIDE this batch that some template here might still templateRef --

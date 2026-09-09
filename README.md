@@ -286,8 +286,18 @@ pip install --no-deps -e .
   Instance用の新しい`InsertionType`として再生成します -- `insertion`は
   外部ファイルを指すため、Templateのプレースホルダーとは別物の`uri`/
   `hash`を`InsertionValue`で呼び出し側が指定する必要があります(`uuid`は
-  省略時に新規生成、`format`は省略時にTemplate側から継承)。対応する
-  `InsertionValue`が無い`insertion`があると`ValueError`になります。
+  省略時に新規生成、`format`は省略時にTemplate側から継承)。
+
+  `insertion_values`は`template.content.insertions`と同じ順序の
+  `Sequence[InsertionValue]`で渡します(`insertion_values[0]`が
+  `template.content.insertions[0]`に対応、以下同順)。`uri`をキーにした
+  辞書ではなく順序で対応付けているのは、MaiML-Schema-1_0が同じ汎用データ
+  コンテナ内の複数`insertion`について`uri`の一意性を一切保証していない
+  ため(`InsertionType`自体も`id`を持たないので、`uri`は識別子として
+  使えません)です。Templateの`insertion`数と`insertion_values`の要素数が
+  一致しない場合、およびTemplateに`insertion`があるのに
+  `insertion_values`を渡さなかった場合は`ValueError`になります(不足分を
+  推測したり、Template側の`uri`/`hash`をそのまま再利用したりはしません)。
 
   ```python
   from pymaiml.builders import InsertionValue, create_instance
@@ -295,12 +305,13 @@ pip install --no-deps -e .
 
   instance = create_instance(
       template, id=ids.new_id("material"), id_factory=ids,
-      insertion_values={
-          "file://template-placeholder.csv": InsertionValue(
+      insertion_values=[
+          InsertionValue(
               uri="file://measured-001.csv",
               hash=m.HashType(value=b"...", method="SHA-256"),
           ),
-      },
+          # ... template.content.insertions[1]以降がある場合は続けて指定 ...
+      ],
   )
   ```
 
