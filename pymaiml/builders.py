@@ -2,7 +2,7 @@
 pymaiml.builders
 ==================
 
-Ergonomic helpers on top of the raw maiml_domain classes, aimed at the four
+Ergonomic helpers on top of the raw maiml_domain classes, aimed at six
 sources of boilerplate/mistakes identified while hand-building MaiML files
 directly against maiml_domain during MaiML-Domain's own development:
 
