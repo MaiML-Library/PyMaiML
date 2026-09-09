@@ -653,6 +653,109 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
     filter条件・意味論を中心とした説明に整理しました。変更経緯自体は
     削除せず、本CHANGELOGを参照するよう一文だけ残しています。
 
+- **`pymaiml.builders`にTemplate→Instance変換機能`create_instance()`/
+  `create_instances()`/`InsertionValue`を追加しました。**
+  `materialTemplate`/`conditionTemplate`/`resultTemplate`(`maiml_domain`の
+  `MaterialTemplateType`/`ConditionTemplateType`/`ResultTemplateType`、
+  典型的には`pymaiml.query.get_templates()`の戻り値)から、対応する
+  `material`/`condition`/`result`インスタンス(`MaterialType`/
+  `ConditionType`/`ResultType`)を組み立てます。設計文書
+  `PyMaiML_template_to_instance_design.md`への対応です。
+
+  ``` text
+  query.get_templates()  -- どのTemplateを対象にするか選ぶ
+          ↓
+  builders.create_instance(s)()  -- 選ばれたTemplateを実体化する
+          ↓
+  maiml_domain Instance object
+  ```
+
+  `query`(選択)と`builders`(組み立て)の責務分離に沿って、
+  `pymaiml.builders`側に配置しています(`pymaiml.query`には置いていません)。
+
+  - `create_instance(template, *, id, id_factory, template_instance_map=None,
+    insertion_values=None)` -- 1つのTemplateから1つのInstanceを生成する
+    下位プリミティブ。Templateの実型(`MaterialTemplateType`等)から対応する
+    Instance型を自動判定するため、呼び出し側がTemplateの種類ごとに別の
+    関数を呼ぶ必要はありません。
+  - `create_instances(templates, *, id_factory, insertion_values=None,
+    existing_instance_map=None)` -- 複数Templateを一括でInstance化する
+    上位関数。`templates`と同じ順序で`list[Instance]`を返します。
+
+  引き継ぐ内容・引き継がない内容は以下のとおりです。
+
+  - `template.id` → `instance.ref`(Instanceが「どのTemplateの実体か」を
+    表す方法そのもの)。
+  - Instance自身の`id`(呼び出し側/`create_instances()`が新規採番)と
+    `content.uuid`(`id_factory`で新規採番)は、Templateの値を流用せず
+    常に新規生成します。
+  - `content.name`/`description`/`annotation`はそのままコピーします
+    (immutableな文字列のため)。
+  - `content.properties`/`content.contents`、および(排他的に設定されて
+    いる場合の)`content.encryption`は`copy.deepcopy()`します。生成後に
+    Instance側を変更してもTemplate側が意図せず変更されないようにする
+    ためです。
+  - `content.insertions`はそのままコピーしません。各`insertion`は
+    Instance用の新しい`InsertionType`として再生成し、`uri`/`hash`は
+    呼び出し側が`InsertionValue`(`uri`/`hash`必須、`uuid`/`format`は
+    省略可)で新しい値を指定します(`uuid`省略時は`id_factory`で新規
+    生成、`format`省略時はTemplate側のinsertionの`format`を継承)。
+    対応する`InsertionValue`が無い`insertion`が存在する場合は
+    `ValueError`になります。
+  - `template.template_refs`(`TemplateRefType`のリスト)は
+    `instance.instance_refs`(`InstanceRefType`のリスト)へ変換します。
+    変換には`template_instance_map`(Template ID→Instance IDの対応表)を
+    使い、Template IDの文字列をそのまま`instanceRef`にコピーすることは
+    しません(Template IDとInstance IDは別の値であり、黙ってコピーすると
+    意味的に不正な参照になり得るため)。対応表に無い`templateRef`は
+    `ValueError`になります。
+  - `template.place_refs`はコピーしません(`MaterialType`/`ConditionType`/
+    `ResultType`にはそもそも`place_refs`という属性自体が存在しません)。
+
+  `template_instance_map`の構築は`create_instance()`自身の責務ではなく、
+  `create_instances()`が担います。理由は、あるTemplateをInstance化して
+  いる時点では、そのTemplateが`templateRef`で参照している別のTemplateの
+  Instance IDがまだ決まっていない可能性があるためです。そのため
+  `create_instances()`は次の2段階で処理します。
+
+  1. `templates`に含まれる全Templateについて、先に(どのInstanceも
+     組み立てる前に)Instance IDを`id_factory`で採番する
+     (`material`/`condition`/`result`プレフィックスはTemplateの種類に
+     応じて自動選択)。同じTemplate IDが`templates`内に2回以上現れた
+     場合は`ValueError`にします。
+  2. `template_instance_map = {**(existing_instance_map or {}),
+     **上記で採番したid}`を組み立ててから、Template1つにつき1回
+     `create_instance()`を呼び出す。
+
+  この順序により、同じバッチ内で後方(リストの後ろ)にあるTemplateを
+  参照する`templateRef`も正しく解決できます。`existing_instance_map`は、
+  今回のバッチ外(例えば以前の別呼び出しで既にInstance化済み)の
+  Templateへの参照を解決するために渡せる任意の対応表で、同じTemplate
+  IDが両方に存在する場合は今回のバッチ側の採番が優先されます。
+
+  `templateRef`/`instanceRef`の対応関係について: MaiML-Schema-1_0は
+  `templateRef`(親が`materialTemplate`)を「同じ`materialTemplate`」の
+  参照として定義していますが、これは「同じ種類(同種)のTemplateを指す」
+  という型の制約であり、「親Template自身を指す」という自己参照の意味
+  ではありません。したがって、Template Aの`templateRef`がTemplate Bを
+  指し、Template A/BをそれぞれInstance化するとInstance Aの
+  `instanceRef`はInstance Bを指す、というTemplate間参照が正常なケース
+  として扱われます。
+
+  `tests/test_builders.py`に、Template種類ごとのInstance型自動判定、
+  id/uuid新規生成、name/description/annotationのコピー、
+  properties/contentsのdeep copyによる分離、encryption排他ケース、
+  insertionの再生成(新uri/hash、format継承、uuid省略時の新規生成、
+  対応するInsertionValueが無い場合の`ValueError`)、
+  `templateRef`→`instanceRef`変換(対応表による解決、対応が無い場合の
+  `ValueError`)、`create_instances()`の2段階処理(バッチ内で後方の
+  Templateへの前方参照の解決、`existing_instance_map`によるバッチ外
+  参照の解決、バッチ内の採番がexisting_instance_mapより優先されること、
+  同一Template IDの重複検出)を検証するテストを追加しました。
+  ユーザー要望(設計文書`PyMaiML_template_to_instance_design.md`の
+  「この実装をお願いします」)への対応です。
+
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。

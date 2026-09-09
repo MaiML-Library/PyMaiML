@@ -255,6 +255,81 @@ pip install --no-deps -e .
   > 外れます)。
   >
 
+  `pymaiml.builders`にはもう1つ、`pymaiml.query.get_templates()`が返す
+  Templateオブジェクトから、対応するInstanceオブジェクトを組み立てる
+  `create_instance()`/`create_instances()`があります(責務分離は
+  `query`が「対象を選ぶ」、`builders`が「選ばれたものを実体化する」)。
+
+  ```python
+  from pymaiml import query
+  from pymaiml.builders import IdFactory, InsertionValue, create_instances
+
+  xml_text = open("template_protocol.maiml", "rb").read()
+  templates = query.get_templates(xml_text, instruction_id="instr-1")
+
+  ids = IdFactory()
+  instances = create_instances(templates, id_factory=ids)
+  ```
+
+  `create_instance(template, *, id, id_factory, template_instance_map=None,
+  insertion_values=None)`は1つのTemplateから1つのInstanceを作る
+  下位プリミティブです。Templateの実型(`MaterialTemplateType`/
+  `ConditionTemplateType`/`ResultTemplateType`)から対応するInstance型
+  (`MaterialType`/`ConditionType`/`ResultType`)を自動判定するため、種類
+  ごとに別の関数を呼ぶ必要はありません。`template.id`は`instance.ref`に
+  なり(これがInstanceが「どのTemplateの実体か」を表す方法です)、
+  Instance自身の`id`/`content.uuid`はTemplateの値を流用せず常に新規生成
+  します。`content.name`/`description`/`annotation`はそのままコピーし、
+  `content.properties`/`content.contents`(および排他的な`encryption`)は
+  `copy.deepcopy()`するため、生成後にInstance側を編集してもTemplate側は
+  変化しません。`content.insertions`だけはそのままコピーせず、
+  Instance用の新しい`InsertionType`として再生成します -- `insertion`は
+  外部ファイルを指すため、Templateのプレースホルダーとは別物の`uri`/
+  `hash`を`InsertionValue`で呼び出し側が指定する必要があります(`uuid`は
+  省略時に新規生成、`format`は省略時にTemplate側から継承)。対応する
+  `InsertionValue`が無い`insertion`があると`ValueError`になります。
+
+  ```python
+  from pymaiml.builders import InsertionValue, create_instance
+  import maiml_domain as m
+
+  instance = create_instance(
+      template, id=ids.new_id("material"), id_factory=ids,
+      insertion_values={
+          "file://template-placeholder.csv": InsertionValue(
+              uri="file://measured-001.csv",
+              hash=m.HashType(value=b"...", method="SHA-256"),
+          ),
+      },
+  )
+  ```
+
+  Templateの`templateRef`はInstanceでは`instanceRef`になりますが、単純に
+  同じ文字列をコピーすることはできません(Template IDとInstance IDは別
+  の値です)。`template_instance_map`(Template ID → Instance IDの対応表)
+  で変換します。MaiML-Schema-1_0が定義する「`templateRef`(親が
+  `materialTemplate`) → 同じ`materialTemplate`」というルールは、参照先が
+  「親自身」ではなく「同じ*種類*の別のTemplate」であることを意味するため、
+  Template Aが`templateRef`でTemplate Bを指す(自己参照ではない)構成は
+  正常なケースとして扱います。
+
+  複数Templateをまとめて実体化する場合は`create_instances(templates, *,
+  id_factory, insertion_values=None, existing_instance_map=None)`を使い
+  ます。あるTemplateが同じバッチ内の別のTemplate(リストの後ろにあるもの
+  でもよい)を`templateRef`で参照していても正しく解決できるよう、
+  (1)バッチ内の全TemplateのInstance IDを先に採番してから、(2)
+  `template_instance_map`を組み立て、(3)その後で1つずつ`create_instance()`
+  を呼ぶ、という2段階で処理します(`create_instance()`自身は
+  `template_instance_map`の構築を行いません -- あるTemplateを処理して
+  いる時点では、参照先TemplateのInstance IDがまだ決まっていない可能性が
+  あるためです)。`existing_instance_map`を渡すと、今回のバッチに含まれ
+  ない(以前の呼び出しで既にInstance化済みの)Templateへの参照も解決でき
+  ます(同じTemplate IDが両方にある場合は今回のバッチ側が優先されます)。
+  同じTemplateを`templates`に2回以上含めることはできず、`ValueError`に
+  なります。解決できない`templateRef`がある場合も`ValueError`になり、
+  Template IDをそのままInstance IDとしてコピーするような黙った代替動作は
+  しません。
+
 - `pymaiml.query` -- ファイル内の「一覧」を取得する読み取り専用ユーティリティ
   群です。`get_uuids()`/`get_keys()`/`get_insertion_uris()`は
   `pymaiml.serialization.loads()`を呼び、その結果の`maiml_domain`オブジェクト

@@ -6,7 +6,16 @@ from decimal import Decimal
 import maiml_domain as m
 import pytest
 
-from pymaiml.builders import IdFactory, XsiTypeRegistry, infer_content, infer_property, new_complete_event
+from pymaiml.builders import (
+    IdFactory,
+    InsertionValue,
+    XsiTypeRegistry,
+    create_instance,
+    create_instances,
+    infer_content,
+    infer_property,
+    new_complete_event,
+)
 
 
 def test_id_factory_generates_unique_ids_per_prefix():
@@ -262,3 +271,349 @@ def test_new_complete_event_sets_lifecycle_property():
     assert event.content.uuid is not None
     assert event.content.properties[0].key == "lifecycle:transition"
     assert event.content.properties[0].value == "complete"
+
+
+# ---------------------------------------------------------------------------
+# create_instance() / create_instances(): Template -> Instance
+# ---------------------------------------------------------------------------
+
+def _place_ref(id_factory: IdFactory, place_id: str) -> m.PlaceRefType:
+    # MaterialTemplateType/ConditionTemplateType/ResultTemplateType all
+    # require at least one PlaceRefType -- these tests don't exercise PNML
+    # topology at all, so the referenced place doesn't need to exist as its
+    # own PlaceType anywhere; it just needs to be present to satisfy that
+    # constructor-level requirement.
+    return m.PlaceRefType(id=id_factory.new_id("ref"), ref=place_id)
+
+
+def _material_template(id_factory: IdFactory, template_id: str, **content_kwargs) -> m.MaterialTemplateType:
+    content = m.GlobalObjectContent(uuid=id_factory.new_uuid(), **content_kwargs)
+    return m.MaterialTemplateType(
+        id=template_id,
+        place_refs=[_place_ref(id_factory, f"{template_id}-place")],
+        content=content,
+        template_refs=[],
+    )
+
+
+def test_create_instance_picks_matching_instance_class_per_template_kind(id_factory):
+    material_tmpl = m.MaterialTemplateType(
+        id="mt1", place_refs=[_place_ref(id_factory, "p1")], content=None, template_refs=[]
+    )
+    condition_tmpl = m.ConditionTemplateType(
+        id="ct1", place_refs=[_place_ref(id_factory, "p2")], content=None, template_refs=[]
+    )
+    result_tmpl = m.ResultTemplateType(
+        id="rt1", place_refs=[_place_ref(id_factory, "p3")], content=None, template_refs=[]
+    )
+
+    material = create_instance(material_tmpl, id="material1", id_factory=id_factory)
+    condition = create_instance(condition_tmpl, id="condition1", id_factory=id_factory)
+    result = create_instance(result_tmpl, id="result1", id_factory=id_factory)
+
+    assert isinstance(material, m.MaterialType)
+    assert isinstance(condition, m.ConditionType)
+    assert isinstance(result, m.ResultType)
+
+
+def test_create_instance_rejects_a_non_template_object():
+    with pytest.raises(TypeError, match="not a template class"):
+        create_instance(m.MaterialType(id="x", ref="y", content=None, instance_refs=[]), id="z", id_factory=IdFactory())
+
+
+def test_create_instance_sets_ref_to_the_template_id_and_generates_a_fresh_id(id_factory):
+    template = _material_template(id_factory, "template-A", name="Sample A")
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.id == "material1"
+    assert instance.ref == "template-A"
+    assert instance.id != template.id
+
+
+def test_create_instance_copies_name_description_annotation_as_is(id_factory):
+    template = _material_template(
+        id_factory, "template-A", name="Sample A", description="desc", annotation="note"
+    )
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.content.name == "Sample A"
+    assert instance.content.description == "desc"
+    assert instance.content.annotation == "note"
+
+
+def test_create_instance_always_generates_a_fresh_content_uuid(id_factory):
+    template = _material_template(id_factory, "template-A", name="Sample A")
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.content.uuid is not None
+    assert instance.content.uuid != template.content.uuid
+
+
+def test_create_instance_gives_a_fresh_content_when_template_has_none(id_factory):
+    template = m.MaterialTemplateType(
+        id="template-A", place_refs=[_place_ref(id_factory, "p1")], content=None, template_refs=[]
+    )
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.content is not None
+    assert instance.content.uuid is not None
+
+
+def test_create_instance_deep_copies_properties_and_contents_so_instance_edits_do_not_leak_back(id_factory):
+    template = _material_template(
+        id_factory,
+        "template-A",
+        properties=[m.StringType(key="ex:color", value="blue")],
+        contents=[m.ContentIntListType(key="ex:series", values=[1, 2, 3])],
+    )
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.content.properties[0].value == "blue"
+    assert instance.content.contents[0].values == [1, 2, 3]
+
+    instance.content.properties[0].value = "red"
+    instance.content.contents[0].values.append(4)
+
+    assert template.content.properties[0].value == "blue"
+    assert template.content.contents[0].values == [1, 2, 3]
+
+
+def test_create_instance_deep_copies_encryption_and_skips_insertions_properties_contents(id_factory):
+    # GlobalObjectContent's own __post_init__ makes encryption mutually
+    # exclusive with name/description/annotation/insertions/properties/
+    # contents (globalObjectContentGroup is an xs:choice), so a template
+    # using encryption has nothing else for _build_instance_content to
+    # copy -- and, by that same constraint, the template's content could
+    # never have had a name/description/annotation set alongside it either.
+    encryption = m.EncryptionType(encrypted_data="ZGF0YQ==")
+    template = _material_template(id_factory, "template-A", encryption=encryption)
+
+    instance = create_instance(template, id="material1", id_factory=id_factory)
+
+    assert instance.content.encryption is not None
+    assert instance.content.encryption is not template.content.encryption
+    assert instance.content.encryption.encrypted_data == "ZGF0YQ=="
+    assert instance.content.name is None
+    assert instance.content.properties == []
+    assert instance.content.insertions == []
+
+
+def test_create_instance_regenerates_insertions_with_new_uri_and_hash(id_factory):
+    old_insertion = m.InsertionType(
+        uri="file://template.csv",
+        hash=m.HashType(value=b"0" * 32, method="SHA-256"),
+        uuid=id_factory.new_uuid(),
+        format="text/csv",
+    )
+    template = _material_template(id_factory, "template-A", insertions=[old_insertion])
+
+    new_value = InsertionValue(uri="file://instance-001.csv", hash=m.HashType(value=b"1" * 32, method="SHA-256"))
+    instance = create_instance(
+        template, id="material1", id_factory=id_factory, insertion_values={"file://template.csv": new_value}
+    )
+
+    new_insertion = instance.content.insertions[0]
+    assert new_insertion.uri == "file://instance-001.csv"
+    assert new_insertion.hash.value == b"1" * 32
+    assert new_insertion.format == "text/csv"  # inherited from the template's insertion
+    assert new_insertion.uuid != old_insertion.uuid
+
+
+def test_create_instance_insertion_value_can_override_format_and_uuid(id_factory):
+    old_insertion = m.InsertionType(
+        uri="file://template.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid(), format="text/csv"
+    )
+    template = _material_template(id_factory, "template-A", insertions=[old_insertion])
+    explicit_uuid = id_factory.new_uuid()
+
+    new_value = InsertionValue(
+        uri="file://instance-001.json",
+        hash=m.HashType(value=b"1" * 32),
+        uuid=explicit_uuid,
+        format="application/json",
+    )
+    instance = create_instance(
+        template, id="material1", id_factory=id_factory, insertion_values={"file://template.csv": new_value}
+    )
+
+    new_insertion = instance.content.insertions[0]
+    assert new_insertion.format == "application/json"
+    assert new_insertion.uuid is explicit_uuid
+
+
+def test_create_instance_missing_insertion_value_raises(id_factory):
+    old_insertion = m.InsertionType(uri="file://template.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    template = _material_template(id_factory, "template-A", insertions=[old_insertion])
+
+    with pytest.raises(ValueError, match=r"file://template\.csv"):
+        create_instance(template, id="material1", id_factory=id_factory)
+
+
+def test_create_instance_translates_template_refs_to_instance_refs_via_map(id_factory):
+    template_b = _material_template(id_factory, "template-B", name="B")
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=m.GlobalObjectContent(uuid=id_factory.new_uuid(), name="A"),
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-B", name="see B", description=None)],
+    )
+
+    instance_b = create_instance(template_b, id="material-B-1", id_factory=id_factory)
+    instance_a = create_instance(
+        template_a,
+        id="material-A-1",
+        id_factory=id_factory,
+        template_instance_map={"template-B": instance_b.id},
+    )
+
+    assert len(instance_a.instance_refs) == 1
+    ref = instance_a.instance_refs[0]
+    assert isinstance(ref, m.InstanceRefType)
+    assert ref.ref == instance_b.id
+    assert ref.name == "see B"
+
+
+def test_create_instance_never_copies_the_template_id_itself_as_an_instance_ref(id_factory):
+    # A templateRef with no entry anywhere in template_instance_map must
+    # raise, not silently fall back to copying the template's own id as if
+    # it were a valid instance id (template id space and instance id space
+    # are never the same value).
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=None,
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-B", name=None, description=None)],
+    )
+
+    with pytest.raises(ValueError, match="template_instance_map has no entry"):
+        create_instance(template_a, id="material-A-1", id_factory=id_factory)
+
+
+def test_create_instance_has_no_place_refs_attribute_to_copy():
+    # MaterialType/ConditionType/ResultType simply don't have a place_refs
+    # parameter -- confirms create_instance() has nothing to (and cannot)
+    # copy there.
+    import inspect
+
+    assert "place_refs" not in inspect.signature(m.MaterialType.__init__).parameters
+
+
+# ---------------------------------------------------------------------------
+# create_instances(): batch orchestration
+# ---------------------------------------------------------------------------
+
+def test_create_instances_reserves_ids_up_front_so_forward_references_resolve(id_factory):
+    # Template A references Template B, but B comes *after* A in the list --
+    # this only works if every id is reserved before any instance is built.
+    template_b = _material_template(id_factory, "template-B", name="B")
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=None,
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-B", name=None, description=None)],
+    )
+
+    instances = create_instances([template_a, template_b], id_factory=id_factory)
+    instance_a, instance_b = instances
+
+    assert instance_a.ref == "template-A"
+    assert instance_b.ref == "template-B"
+    assert instance_a.instance_refs[0].ref == instance_b.id
+
+
+def test_create_instances_returns_instances_in_the_same_order_as_templates(id_factory):
+    templates = [_material_template(id_factory, f"template-{i}") for i in range(3)]
+    instances = create_instances(templates, id_factory=id_factory)
+    assert [instance.ref for instance in instances] == ["template-0", "template-1", "template-2"]
+
+
+def test_create_instances_assigns_instance_ids_with_the_kind_specific_prefix(id_factory):
+    material_tmpl = m.MaterialTemplateType(id="mt1", place_refs=[_place_ref(id_factory, "p1")], content=None, template_refs=[])
+    condition_tmpl = m.ConditionTemplateType(id="ct1", place_refs=[_place_ref(id_factory, "p2")], content=None, template_refs=[])
+    result_tmpl = m.ResultTemplateType(id="rt1", place_refs=[_place_ref(id_factory, "p3")], content=None, template_refs=[])
+
+    instances = create_instances([material_tmpl, condition_tmpl, result_tmpl], id_factory=id_factory)
+
+    assert instances[0].id.startswith("material")
+    assert instances[1].id.startswith("condition")
+    assert instances[2].id.startswith("result")
+
+
+def test_create_instances_rejects_the_same_template_id_twice_in_one_batch(id_factory):
+    template = _material_template(id_factory, "template-A")
+    with pytest.raises(ValueError, match="more than once"):
+        create_instances([template, template], id_factory=id_factory)
+
+
+def test_create_instances_rejects_a_non_template_object():
+    with pytest.raises(TypeError, match="not a template class"):
+        create_instances([m.MaterialType(id="x", ref="y", content=None, instance_refs=[])], id_factory=IdFactory())
+
+
+def test_create_instances_existing_instance_map_resolves_references_outside_the_batch(id_factory):
+    # template-B was instantiated in an earlier, separate call/batch --
+    # only template-A is being instantiated now, and its templateRef must
+    # still resolve via the caller-supplied existing_instance_map.
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=None,
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-B", name=None, description=None)],
+    )
+
+    instances = create_instances(
+        [template_a], id_factory=id_factory, existing_instance_map={"template-B": "material-B-existing"}
+    )
+
+    assert instances[0].instance_refs[0].ref == "material-B-existing"
+
+
+def test_create_instances_own_batch_wins_over_existing_instance_map_on_collision(id_factory):
+    # If a template id appears in both this batch and existing_instance_map,
+    # the batch's own freshly-generated instance id must take precedence --
+    # a template being instantiated right now is never "already existing".
+    template_b = _material_template(id_factory, "template-B", name="B")
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=None,
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-B", name=None, description=None)],
+    )
+
+    instances = create_instances(
+        [template_a, template_b],
+        id_factory=id_factory,
+        existing_instance_map={"template-B": "stale-instance-id"},
+    )
+    instance_a, instance_b = instances
+
+    assert instance_a.instance_refs[0].ref == instance_b.id
+    assert instance_a.instance_refs[0].ref != "stale-instance-id"
+
+
+def test_create_instances_missing_reference_raises_even_across_the_whole_batch(id_factory):
+    template_a = m.MaterialTemplateType(
+        id="template-A",
+        place_refs=[_place_ref(id_factory, "p-a")],
+        content=None,
+        template_refs=[m.TemplateRefType(id="tref1", ref="template-missing", name=None, description=None)],
+    )
+    template_b = _material_template(id_factory, "template-B")
+
+    with pytest.raises(ValueError, match="template_instance_map has no entry"):
+        create_instances([template_a, template_b], id_factory=id_factory)
+
+
+def test_create_instances_insertion_values_are_keyed_by_template_id_then_uri(id_factory):
+    old_insertion = m.InsertionType(uri="file://template.csv", hash=m.HashType(value=b"0" * 32), uuid=id_factory.new_uuid())
+    template = _material_template(id_factory, "template-A", insertions=[old_insertion])
+
+    instances = create_instances(
+        [template],
+        id_factory=id_factory,
+        insertion_values={
+            "template-A": {"file://template.csv": InsertionValue(uri="file://instance.csv", hash=m.HashType(value=b"1" * 32))}
+        },
+    )
+
+    assert instances[0].content.insertions[0].uri == "file://instance.csv"

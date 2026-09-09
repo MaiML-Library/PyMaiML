@@ -23,9 +23,15 @@ concerns live here, in the SDK layer, split across four modules:
       Ergonomic helpers that reduce the boilerplate/mistakes of building a
       maiml_domain object tree by hand: unique id/uuid generation
       (IdFactory), property/content class inference from a Python value's
-      type (infer_property/infer_content), and the
+      type (infer_property/infer_content), the
       lifecycle:transition="complete" event that validation's EVT-02 rule
-      requires whenever <data> records a measurement (new_complete_event).
+      requires whenever <data> records a measurement (new_complete_event),
+      and turning a materialTemplate/conditionTemplate/resultTemplate into
+      the material/condition/result instance it describes -- new id/uuid,
+      the generic data container copied (insertions regenerated with a
+      caller-supplied uri/hash), and every templateRef re-pointed to the
+      right instanceRef via a template-id-to-instance-id map
+      (create_instance/create_instances).
 
   pymaiml.query
       Read-only "what's in this file" utilities, in two families. Four

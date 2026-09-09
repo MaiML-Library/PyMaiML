@@ -30,6 +30,19 @@ directly against maiml_domain during MaiML-Domain's own development:
      prefix -- this is EVT-02 in the maiml-schema-validator skill's rule
      set, and was hand-written three separate times in MaiML-Domain's own
      test script before this module existed (`new_complete_event`).
+  6. Turning a materialTemplate/conditionTemplate/resultTemplate into the
+     material/condition/result instance it describes -- assigning the
+     instance's own id/uuid (never reused from the template), copying the
+     template's generic data container, and re-pointing every templateRef
+     to the right instanceRef once its target has been instantiated too
+     (`create_instance` / `create_instances`).
+
+This is the pymaiml.query -> pymaiml.builders handoff for this kind of
+work: pymaiml.query.get_templates() selects which templates to act on
+(by kind, by instruction_id, ...); pymaiml.builders.create_instance(s)()
+turns the selected maiml_domain.protocol template objects into
+maiml_domain.data instance objects. Neither module reaches into the
+other for this -- the caller passes query's output as builders' input.
 
 This module does not attempt a full "session"/fluent builder over the
 entire object graph -- that would need to model every XSD content model's
@@ -40,17 +53,20 @@ against real validation output.
 """
 from __future__ import annotations
 
+import copy
+import dataclasses
 import inspect
 import itertools
 import re
 import uuid as _uuidlib
 from datetime import datetime
 from decimal import Decimal
-from typing import Any, Dict, List, Optional, Type, Union
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Type, Union
 
 import maiml_domain as m
 
 from ._xsi_registry import class_for_xsi_type, is_content_class, is_property_class
+from .query import Instance, Template
 
 __all__ = [
     "IdFactory",
@@ -59,6 +75,9 @@ __all__ = [
     "infer_property",
     "infer_content",
     "new_complete_event",
+    "InsertionValue",
+    "create_instance",
+    "create_instances",
 ]
 
 # The exact XES lifecycle extension URI that maiml-schema-validator's NS-01
@@ -550,3 +569,340 @@ def new_complete_event(
         ref=ref,
         content=m.GlobalObjectContent(uuid=content_uuid, properties=properties),
     )
+
+
+# ---------------------------------------------------------------------------
+# Template -> Instance: turning a materialTemplate/conditionTemplate/
+# resultTemplate into the material/condition/result it describes
+# ---------------------------------------------------------------------------
+
+# Which maiml_domain instance class a given template class becomes, and
+# the IdFactory prefix create_instances() reserves its id under (matching
+# the "material"/"condition"/"result" prefixes already used for these
+# instance kinds elsewhere in this project, e.g. tests/conftest.py).
+_TEMPLATE_TO_INSTANCE: Dict[type, type] = {
+    m.MaterialTemplateType: m.MaterialType,
+    m.ConditionTemplateType: m.ConditionType,
+    m.ResultTemplateType: m.ResultType,
+}
+_INSTANCE_ID_PREFIX: Dict[type, str] = {
+    m.MaterialTemplateType: "material",
+    m.ConditionTemplateType: "condition",
+    m.ResultTemplateType: "result",
+}
+
+
+@dataclasses.dataclass(frozen=True)
+class InsertionValue:
+    """
+    The new uri/hash (and optionally uuid/format) create_instance() should
+    give one of a template's <insertion> elements when building the
+    matching instance's own copy of it.
+
+    A template's insertion is never copied to an instance as-is -- an
+    <insertion> names an *external file*, and the instance's copy of an
+    inserted file is a distinct file from the template's (the template's
+    insertion is typically a placeholder or an example; the instance's is
+    the file this particular measurement/analysis actually produced) --
+    so its uri and hash must always be supplied fresh by the caller, who
+    is the only one who knows what that new file's uri/hash actually are.
+    uuid, if omitted, is generated fresh (via the same IdFactory
+    create_instance()/create_instances() were given); format, if omitted,
+    is copied from the template's insertion (the file *format* -- e.g.
+    "text/csv" -- is the one part of an insertion that often does stay
+    the same between a template's placeholder and an instance's real
+    file, unlike uri/hash which by definition cannot).
+    """
+
+    uri: str
+    hash: "m.HashType"
+    uuid: Optional["m.Uuid"] = None
+    format: Optional[str] = None
+
+
+def _build_instance_insertions(
+    template_insertions: List["m.InsertionType"],
+    *,
+    id_factory: IdFactory,
+    insertion_values: Optional[Mapping[str, InsertionValue]],
+) -> List["m.InsertionType"]:
+    """Rebuild `template_insertions` as new InsertionType objects for an
+    instance, using insertion_values (keyed by the template insertion's own
+    uri -- InsertionType has no id of its own to key by) to supply each
+    one's new uri/hash. Raises ValueError naming the uri if a template
+    insertion has no matching entry -- see InsertionValue's docstring for
+    why an instance's insertion can never just reuse the template's."""
+    result: List["m.InsertionType"] = []
+    for old in template_insertions:
+        value = (insertion_values or {}).get(old.uri)
+        if value is None:
+            raise ValueError(
+                f"create_instance: template has an <insertion uri={old.uri!r}> but "
+                f"insertion_values has no entry for {old.uri!r} -- pass "
+                f"insertion_values={{{old.uri!r}: InsertionValue(uri=..., hash=...), "
+                "...} with a new uri/hash for the instance's own copy of this "
+                "insertion (a template's insertion is never reused as-is -- see "
+                "InsertionValue's docstring)."
+            )
+        result.append(
+            m.InsertionType(
+                uri=value.uri,
+                hash=value.hash,
+                uuid=value.uuid if value.uuid is not None else id_factory.new_uuid(),
+                format=value.format if value.format is not None else old.format,
+            )
+        )
+    return result
+
+
+def _build_instance_content(
+    template_content: Optional["m.GlobalObjectContent"],
+    *,
+    id_factory: IdFactory,
+    insertion_values: Optional[Mapping[str, InsertionValue]],
+) -> "m.GlobalObjectContent":
+    """The instance's own GlobalObjectContent: a fresh uuid (never the
+    template's own identity uuid -- see create_instance()'s docstring),
+    name/description/annotation copied as-is (immutable strs), and either
+    - encryption deep-copied, when the template's content used it (mutually
+      exclusive with insertions/properties/contents on GlobalObjectContent,
+      so there is nothing else to copy in that case), or
+    - insertions rebuilt via _build_instance_insertions(), and
+      properties/contents deep-copied (so editing the instance's copy can
+      never mutate the template's own property/content objects).
+    template_content=None (a template with no generic data container at
+    all) still gets a fresh, otherwise-empty content -- an instance is
+    itself a global object and needs its own identity uuid regardless of
+    whether the template it comes from happened to declare one.
+    """
+    if template_content is None:
+        return m.GlobalObjectContent(uuid=id_factory.new_uuid())
+
+    if template_content.encryption is not None:
+        return m.GlobalObjectContent(
+            uuid=id_factory.new_uuid(),
+            name=template_content.name,
+            description=template_content.description,
+            annotation=template_content.annotation,
+            encryption=copy.deepcopy(template_content.encryption),
+        )
+
+    return m.GlobalObjectContent(
+        uuid=id_factory.new_uuid(),
+        name=template_content.name,
+        description=template_content.description,
+        annotation=template_content.annotation,
+        insertions=_build_instance_insertions(
+            template_content.insertions, id_factory=id_factory, insertion_values=insertion_values
+        ),
+        properties=copy.deepcopy(template_content.properties),
+        contents=copy.deepcopy(template_content.contents),
+    )
+
+
+def _convert_template_refs(
+    template_refs: List["m.TemplateRefType"],
+    *,
+    template_instance_map: Optional[Mapping[str, str]],
+    id_factory: IdFactory,
+) -> List["m.InstanceRefType"]:
+    """Every <templateRef> on a template names another template of the
+    same kind (see maiml-schema-validator's REF-01/02/03 rules); the
+    matching <instanceRef> on the instance being built must name that
+    other template's own instance instead -- never the other template's
+    id itself, since a template id and its instance's id are never the
+    same value. template_instance_map (built by create_instances(), or
+    supplied directly to a standalone create_instance() call) is what
+    resolves one to the other; a templateRef with no entry in it raises
+    ValueError rather than silently leaving a dangling or template-id
+    reference in the output."""
+    result: List["m.InstanceRefType"] = []
+    for tref in template_refs:
+        try:
+            target_instance_id = template_instance_map[tref.ref]
+        except (KeyError, TypeError):
+            raise ValueError(
+                f"create_instance: template has a <templateRef ref={tref.ref!r}> but "
+                f"template_instance_map has no entry for {tref.ref!r} -- every "
+                "templateRef must resolve to the id of an instance, via "
+                "template_instance_map (create_instances() builds this "
+                "automatically for every template in the same batch) or "
+                "existing_instance_map (for a template instantiated separately, "
+                "e.g. in an earlier call). Instantiate the referenced template in "
+                "the same create_instances() call, or supply its instance id via "
+                "existing_instance_map, before instantiating this one."
+            ) from None
+        result.append(
+            m.InstanceRefType(
+                id=id_factory.new_id("ref"),
+                ref=target_instance_id,
+                name=tref.name,
+                description=tref.description,
+            )
+        )
+    return result
+
+
+def create_instance(
+    template: Template,
+    *,
+    id: str,
+    id_factory: IdFactory,
+    template_instance_map: Optional[Mapping[str, str]] = None,
+    insertion_values: Optional[Mapping[str, InsertionValue]] = None,
+) -> Instance:
+    """
+    Build the material/condition/result instance that `template`
+    (a MaterialTemplateType/ConditionTemplateType/ResultTemplateType --
+    see pymaiml.query.Template, typically obtained from
+    pymaiml.query.get_templates()) describes, as the matching maiml_domain
+    instance class (MaterialType/ConditionType/ResultType -- see
+    pymaiml.query.Instance) determined automatically from `template`'s own
+    type; callers never pick the instance class themselves.
+
+    `id` is the new instance's own id -- this function does not generate
+    it itself (see create_instances(), which reserves ids for a whole
+    batch up front via an IdFactory before building any instance, so every
+    templateRef in that batch can already resolve to a real instance id by
+    the time it is needed). `id_factory` is still required here too: it is
+    used to mint the instance's own fresh content uuid, every rebuilt
+    <insertion>'s uuid (unless InsertionValue supplies one), and every
+    <instanceRef> wrapper element's own id.
+
+    What is copied from `template` to the new instance, and what is not:
+      - template.id becomes instance.ref (this is *how* an instance says
+        which template it is an instance of -- see maiml_domain.data).
+      - template.content's name/description/annotation are copied as-is;
+        its insertions/properties/contents (or encryption) are copied via
+        a fresh GlobalObjectContent, never the same mutable list/object
+        the template holds (see _build_instance_content()) -- editing the
+        returned instance afterwards can never mutate `template`.
+      - template.content's insertions are NOT copied as-is: each becomes a
+        brand new InsertionType with a caller-supplied uri/hash (via
+        insertion_values, keyed by the template insertion's own uri -- see
+        InsertionValue's docstring for why the template's uri/hash can
+        never just be reused). A template insertion with no matching
+        insertion_values entry raises ValueError.
+      - template.template_refs become instance.instance_refs, each
+        translated via template_instance_map (see _convert_template_refs()
+        and template_instance_map's own docstring below) rather than
+        copied by id -- a templateRef with no entry in template_instance_map
+        raises ValueError rather than silently pointing at a template's id
+        (which is never a valid instance id) or being dropped.
+      - The instance's own id (the `id` parameter) and its content's uuid
+        are always newly assigned, never copied from `template` -- an
+        instance is a distinct object from the template it instantiates,
+        with its own identity, even though it shares the template's
+        name/description/annotation/generic-data-container content.
+      - template.place_refs is NOT copied: MaterialType/ConditionType/
+        ResultType has no place_refs attribute at all (a template's
+        connection to PNML topology has no instance-side equivalent).
+
+    template_instance_map, if given, maps every OTHER template's id this
+    template's own template_refs might point to, to that other template's
+    already-decided instance id -- it does not need (and for a
+    single-template call, will not have) an entry for `template.id`
+    itself. Pass it whenever `template.template_refs` is non-empty;
+    create_instances() builds and passes it automatically when
+    instantiating a batch of related templates together.
+    """
+    instance_cls = _TEMPLATE_TO_INSTANCE.get(type(template))
+    if instance_cls is None:
+        raise TypeError(
+            f"create_instance: {type(template).__name__} is not a template class -- "
+            f"expected one of {[c.__name__ for c in _TEMPLATE_TO_INSTANCE]}"
+        )
+
+    content = _build_instance_content(
+        template.content, id_factory=id_factory, insertion_values=insertion_values
+    )
+    instance_refs = _convert_template_refs(
+        template.template_refs, template_instance_map=template_instance_map, id_factory=id_factory
+    )
+    return instance_cls(id=id, ref=template.id, content=content, instance_refs=instance_refs)
+
+
+def create_instances(
+    templates: Sequence[Template],
+    *,
+    id_factory: IdFactory,
+    insertion_values: Optional[Mapping[str, Mapping[str, InsertionValue]]] = None,
+    existing_instance_map: Optional[Mapping[str, str]] = None,
+) -> List[Instance]:
+    """
+    Build one instance per template in `templates` (e.g. the result of
+    pymaiml.query.get_templates(xml_text, instruction_id=...)), handling
+    the two-phase sequencing create_instance() itself deliberately does
+    not: every instance's id must be decided *before* any instance is
+    built, because a template's templateRef can point at another template
+    in the same batch whose own instance doesn't exist yet at the point
+    this template is instantiated (see create_instance()'s
+    template_instance_map parameter -- this is exactly why that map is
+    not create_instance()'s own responsibility to build).
+
+    Processing order:
+      1. Reserve a fresh instance id for every template in `templates`
+         (via id_factory, under the "material"/"condition"/"result"
+         prefix matching each template's own kind) -- this is `own_ids`,
+         {template.id: new_instance_id}. Raises ValueError if the same
+         template.id appears more than once in `templates` (each must be
+         instantiated at most once per call).
+      2. Build template_instance_map = {**(existing_instance_map or {}),
+         **own_ids} -- own_ids' entries win on a key collision, since a
+         template being instantiated in this very call always takes
+         precedence over a stale existing_instance_map entry for the same
+         template id.
+      3. Call create_instance() once per template, passing its reserved id
+         from own_ids, the shared template_instance_map from step 2, and
+         (if given) that template's own entry from insertion_values.
+
+    insertion_values, if given, is keyed by template.id first and then by
+    each insertion's own uri (see InsertionValue and
+    create_instance()'s insertion_values -- this is create_instance()'s
+    same, single-template-scoped parameter, just nested one level to
+    cover a whole batch of templates that may each have their own
+    insertions to re-key).
+
+    existing_instance_map, if given, supplies instance ids for templates
+    OUTSIDE this batch that some template here might still templateRef --
+    e.g. a template instantiated in an earlier, separate call. Without an
+    entry (here or in the freshly built own_ids) for every templateRef
+    target, create_instance() raises ValueError (see its own
+    template_instance_map docstring) rather than silently leaving a
+    dangling or template-id reference in the output.
+
+    Returns instances in the same order as `templates`.
+    """
+    templates = list(templates)
+
+    seen_template_ids = set()
+    own_ids: Dict[str, str] = {}
+    for template in templates:
+        if template.id in seen_template_ids:
+            raise ValueError(
+                f"create_instances: template id {template.id!r} appears more than "
+                "once in `templates` -- each template can be instantiated at most "
+                "once per call."
+            )
+        seen_template_ids.add(template.id)
+
+        prefix = _INSTANCE_ID_PREFIX.get(type(template))
+        if prefix is None:
+            raise TypeError(
+                f"create_instances: {type(template).__name__} is not a template "
+                f"class -- expected one of {[c.__name__ for c in _INSTANCE_ID_PREFIX]}"
+            )
+        own_ids[template.id] = id_factory.new_id(prefix)
+
+    template_instance_map: Dict[str, str] = {**(existing_instance_map or {}), **own_ids}
+
+    return [
+        create_instance(
+            template,
+            id=own_ids[template.id],
+            id_factory=id_factory,
+            template_instance_map=template_instance_map,
+            insertion_values=(insertion_values or {}).get(template.id),
+        )
+        for template in templates
+    ]
