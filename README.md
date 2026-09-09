@@ -255,46 +255,59 @@ pip install --no-deps -e .
   > 外れます)。
   >
 
-- `pymaiml.query` -- ファイル内の「一覧」を取得する、独立した読み取り専用
-  ユーティリティ群です。`serialization.loads()`を経由しない(=スキーマ
-  妥当性を要求しない、`maiml_domain`オブジェクトツリーも構築しない)ため、
-  まだ検証していないファイルに対する軽量な下調べとしても使えます。
+- `pymaiml.query` -- ファイル内の「一覧」を取得する読み取り専用ユーティリティ
+  群です。`get_uuids()`/`get_keys()`/`get_insertion_uris()`は
+  `pymaiml.serialization.loads()`を呼び、その結果の`maiml_domain`オブジェクト
+  ツリー(`loaded.root`)から値を拾います -- 生XMLを直接走査する独自実装は持たず、
+  `serialization.py`が実際に読み書きする内容と食い違う心配がありません。その
+  ため、この3関数に渡すXMLはスキーマ妥当である必要があります(`maiml_domain`の
+  コンストラクタが要求するカーディナリティを満たさない場合は、`loads()`と同じ
+  例外がそのまま送出されます)。`get_namespaces()`だけは例外で、今も生XMLを
+  直接解析します(名前空間宣言は`maiml_domain`のオブジェクトツリーにはそもそも
+  存在しない情報のためです)。
 
   ```python
   from pymaiml import query
 
   xml_text = open("sample.maiml", "rb").read()
-  query.get_uuids(xml_text)           # -> List[str]  (<uuid>要素のテキスト、重複含む全件)
+  query.get_uuids(xml_text)           # -> List[str]  (uuid値、重複含む全件)
   query.get_keys(xml_text)            # -> List[str]  (key=属性値)
   query.get_namespaces(xml_text)      # -> Dict[str, str]  ({接頭辞: URI})
-  query.get_insertion_uris(xml_text)  # -> List[str]  (<insertion>/<uri>のテキスト)
+  query.get_insertion_uris(xml_text)  # -> List[str]  (InsertionType.uri)
   ```
 
   4関数とも出現順を保持しますが、重複の扱いは`get_uuids()`だけ異なります。
   `get_keys()`/`get_insertion_uris()`/`get_namespaces()`は重複を除去した
   結果を返します(`get_namespaces`は`dict`なので、キーの挿入順がそのまま
-  出現順になります)。一方`get_uuids()`は重複を除去せず、出現した
-  `<uuid>`要素のテキストを全件そのまま返します。`uuid`は本来オブジェクトを
-  一意に識別するためのものなので、同じ値が複数回出現すること自体が
-  検出したい事実になり得るためです(重複除去した一覧が欲しい場合は
-  呼び出し側で`set(...)`や`dict.fromkeys(...)`を使ってください)。
-  `get_uuids()`は`<uuid>`という要素名が使われる箇所すべて(オブジェクトの
-  識別uuid・`insertion`自身のuuid・`chain`/`parent`のuuid)を区別せず
-  一括で拾い、`get_keys()`も同様に`<property>`/`<content>`/`<chain>`/
-  `<parent>`の`key`属性をまとめて拾います。`get_namespaces()`は
-  `LoadedMaiml.namespaces`(ルート`<maiml>`要素のみ走査)とは異なり木全体を
-  走査するため、`pymaiml`の`dumps()`を経由していない外部生成ファイル
-  (例: ルート以外の要素に`xmlns:ds`を宣言したまま署名されたファイル)でも
-  正しく名前空間を検出できます。同じ接頭辞に異なるURIが束縛されている
-  場合は`ValueError`を送出します。`get_insertion_uris()`が返すURIは、
-  `<insertion>`要素の`<uri>`子要素のテキストです(`insertion*`の詳細は
-  `maiml-data-merger`スキルの「INSERTION attachment」も参照)。
+  出現順になります)。一方`get_uuids()`は重複を除去せず、見つかったuuidを
+  全件そのまま返します。`uuid`は本来オブジェクトを一意に識別するためのもの
+  なので、同じ値が複数回出現すること自体が検出したい事実になり得るためです
+  (重複除去した一覧が欲しい場合は呼び出し側で`set(...)`や
+  `dict.fromkeys(...)`を使ってください)。
 
-  4関数とも、`pymaiml.serialization.loads()`と同じ
-  (`pymaiml._xml_security.make_untrusted_input_parser()`による)XXE/
-  entity-expansion/networkハードニング済みのパーサーで解析します。
-  「このファイルに何が入っているか一覧を取る」という用途は、未検証・
-  未信頼な入力に対してまさに使われがちな操作のためです。
+  `get_uuids()`/`get_keys()`/`get_insertion_uris()`は、`maiml_domain`の各
+  クラスの`__init__`が属性を代入する順序をそのまま辿る、クラスの種類に依存
+  しない汎用的な木構造の走査(`vars(obj)`を再帰的に辿る)で値を集めます。
+  そのため`maiml_domain`が将来クラスを追加しても、この3関数側を追随させる
+  必要がありません。`get_uuids()`は`uuid`属性を持つあらゆるオブジェクト
+  (`GlobalObjectContent`の識別uuid・`InsertionType`のuuid・`ChainType`/
+  `ParentType`のuuid)をまとめて拾い、`get_keys()`も同様に`key`属性を持つ
+  あらゆるオブジェクト(`property`/`content`の各具象クラス、`ChainType`/
+  `ParentType`)をまとめて拾います。`get_insertion_uris()`は
+  `InsertionType.uri`だけを集めます -- `InsertionType`は`uri`を必須にして
+  いるため、URIを持たない`insertion`という不正な形はそもそも構築できません。
+
+  `get_namespaces()`は`LoadedMaiml.namespaces`(ルート`<maiml>`要素のみ走査)
+  とは異なり木全体を走査するため、`pymaiml`の`dumps()`を経由していない
+  外部生成ファイル(例: ルート以外の要素に`xmlns:ds`を宣言したまま署名された
+  ファイル)でも正しく名前空間を検出できます。同じ接頭辞に異なるURIが束縛
+  されている場合は`ValueError`を送出します。
+
+  `get_uuids()`/`get_keys()`/`get_insertion_uris()`のXXE/entity-expansion/
+  networkハードニングは、内部で呼び出す`pymaiml.serialization.loads()`の
+  ものがそのまま適用されます(これら3関数はもう生XMLを自前で解析しません)。
+  `get_namespaces()`は今も`pymaiml._xml_security.make_untrusted_input_parser()`
+  で直接解析するため、同等のハードニングを維持しています。
 
 ## テスト
 

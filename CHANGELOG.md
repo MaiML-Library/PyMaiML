@@ -450,6 +450,61 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   追記し、`tests/test_query.py`(13件、上記の重複除去・走査範囲・
   エラー送出・XXEハードニングをそれぞれ検証)を追加しました。
   ユーザー要望・設計指定。
+- **`pymaiml.query`を、生のXMLを直接走査する独立実装から
+  `maiml_domain`ベースの実装へ書き換え(破壊的変更)。** 上記のエントリで
+  記述した「`serialization.loads()`を経由しない」という設計は撤回します。
+  `get_uuids()`/`get_keys()`/`get_insertion_uris()`は、いまは
+  `pymaiml.serialization.loads(xml_text)`を呼び出し、その結果の
+  `maiml_domain`オブジェクトツリー(`loaded.root`)から値を読み取ります。
+  理由は、「このファイルに何が入っているか」というPython向けの見え方は、
+  このプロジェクトのPython系ツールが共有する唯一の正しいドメインモデルで
+  ある`maiml_domain`経由で提供すべきであり、同じタグ/属性名を偶然一致
+  させているだけの独立したXML走査実装をもう1つ持つべきではない、という
+  より強いルールに従うためです。
+
+  この変更の直接的な結果として、以下の3点があります。
+  - `xml_text`はスキーマ妥当なMaiMLでなければなりません。
+    `maiml_domain`のコンストラクタが要求するカーディナリティを満たさない
+    入力に対しては、`loads()`と同じ例外(多くは`ValueError`、整形式でない
+    XMLの場合はlxmlのパースエラー)がそのまま送出されます。以前この
+    3関数がサポートしていた「スキーマ検証前のファイルに対する軽量な
+    下調べ」という用途は、もう使えません(先に`validate()`または
+    `load()`してください)。
+  - この3関数のXXE/entity-expansion/networkハードニングは、内部で
+    呼び出す`serialization.loads()`のものがそのまま適用されます。この
+    3関数自体はもうXMLを直接パースしないため、独自に守るべきハードニング
+    経路自体が存在しません。
+  - URIを持たない`<insertion>`という不正な形は、もう`get_insertion_uris()`
+    に到達し得ません。`InsertionType.__post_init__`が空/欠落した`uri`を
+    拒否するため、そのような`insertion`はそもそも`maiml_domain`オブジェクト
+    として構築できないからです(以前の実装が持っていた、URIなしの
+    `insertion`をスキップする防御的な分岐は不要になり、削除しました)。
+
+  `get_namespaces()`だけは例外として、今も生XMLを`lxml.etree`で直接
+  解析します。名前空間宣言はXMLレベルの概念であり、`maiml_domain`の
+  どのクラスにも保持されていない(`serialization`の「既知の制限」参照:
+  `dumps()`は`extra_namespaces=`から再構築するだけで、`maiml_domain`側は
+  一切名前空間を持たない)ため、読み替えるべきオブジェクトツリー上の
+  情報がそもそも存在しないためです。
+
+  内部実装として、`_iter_domain_objects()`という汎用ヘルパーを追加
+  しました。`maiml_domain`の約30の構造クラス・約50のproperty/content
+  リーフクラスを個別に分岐せず、`vars(obj)`を各クラスの`__init__`が
+  属性を代入した順序のまま再帰的に辿ることで、`uuid`/`key`属性を持つ
+  オブジェクトや`InsertionType`インスタンスを汎用的に収集します。これに
+  より`maiml_domain`が将来クラスを追加しても`pymaiml.query`側の追随が
+  不要になります(循環参照に備えた`id()`ベースの訪問済みガード付き。
+  ただし`maiml_domain`自身が循環するオブジェクトグラフを生成することは
+  ありません)。
+
+  `README.md`の`pymaiml.query`節、`pymaiml/__init__.py`のモジュール概要、
+  `tests/test_query.py`(既存の生XMLスニペットを使うテストを、
+  `minimal_root`フィクスチャを土台にした実オブジェクトツリー経由のテストへ
+  全面的に置き換え。「URIなしのinsertion」テストは、その形自体が
+  `maiml_domain`では構築不能になったため削除し、代わりに
+  `InsertionType`が`uri`を必須とすることを検証するテストを追加)を
+  更新しました。ユーザー要望(「MaiML-Domainを使用するというルールの
+  もと、コードを修正して」)。
 
 ## [0.1.0] - 未リリース
 

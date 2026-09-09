@@ -28,10 +28,13 @@ concerns live here, in the SDK layer, split across four modules:
       requires whenever <data> records a measurement (new_complete_event).
 
   pymaiml.query
-      Independent, read-only "list the X used in this file" utilities
-      that work directly on the XML (not via serialization.loads(), so
-      they don't require the file to be schema-valid first): every
+      Read-only "list the X used in this file" utilities: every
       get_uuids(), get_keys(), get_namespaces(), get_insertion_uris().
+      get_uuids()/get_keys()/get_insertion_uris() read their answer off
+      the maiml_domain object tree serialization.loads() builds (so the
+      file must be schema-valid); get_namespaces() is the one exception
+      and parses the XML directly, since namespace declarations have no
+      maiml_domain representation at all.
 
 Typical usage:
 
