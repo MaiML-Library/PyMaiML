@@ -28,12 +28,18 @@ concerns live here, in the SDK layer, split across four modules:
       requires whenever <data> records a measurement (new_complete_event).
 
   pymaiml.query
-      Read-only "list the X used in this file" utilities: every
-      get_uuids(), get_keys(), get_namespaces(), get_insertion_uris().
-      get_uuids()/get_keys()/get_insertion_uris() read their answer off
-      the maiml_domain object tree serialization.loads() builds (so the
-      file must be schema-valid); get_namespaces() is the one exception
-      and parses the XML directly, since namespace declarations have no
+      Read-only "what's in this file" utilities, in two families. Four
+      "list the X" functions return flat lists of strings: get_uuids(),
+      get_keys(), get_namespaces(), get_insertion_uris(). Two
+      object-returning functions take keyword-argument filters instead:
+      get_templates(xml_text, *, kind=None) and get_instances(xml_text,
+      *, kind=None, instruction_id=None), returning the actual
+      maiml_domain template/instance objects (id-only access is just
+      [obj.id for obj in ...] on the result, not a separate function).
+      Every function except get_namespaces() reads its answer off the
+      maiml_domain object tree serialization.loads() builds (so the file
+      must be schema-valid); get_namespaces() is the one exception and
+      parses the XML directly, since namespace declarations have no
       maiml_domain representation at all.
 
 Typical usage:

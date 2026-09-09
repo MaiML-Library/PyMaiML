@@ -309,6 +309,54 @@ pip install --no-deps -e .
   `get_namespaces()`は今も`pymaiml._xml_security.make_untrusted_input_parser()`
   で直接解析するため、同等のハードニングを維持しています。
 
+  上記4関数(文字列のフラットな一覧を返す)とは別に、`get_templates()`/
+  `get_instances()`という2関数があります。こちらは文字列ではなく
+  `maiml_domain`のオブジェクトそのものを返し、キーワード引数でフィルタする
+  設計です(「id だけ欲しい」場合は関数を分けず、返ってきたオブジェクトから
+  呼び出し側で`.id`を取り出すだけで済みます)。両関数とも
+  `pymaiml.serialization.loads()`を経由するため、上記3関数と同じくXMLは
+  スキーマ妥当である必要があります。
+
+  ```python
+  from pymaiml import query
+
+  xml_text = open("sample.maiml", "rb").read()
+
+  # テンプレート一覧(material/condition/resultTemplateの実体そのもの)
+  query.get_templates(xml_text)                 # -> 全種類
+  query.get_templates(xml_text, kind="material") # -> materialTemplateのみ
+
+  # インスタンス一覧(material/condition/resultの実体そのもの)
+  query.get_instances(xml_text)                            # -> 全種類
+  query.get_instances(xml_text, kind="result")              # -> resultのみ
+  query.get_instances(xml_text, instruction_id="instr-1")   # -> ある instruction に紐づくものだけ
+
+  # id だけ欲しい場合は呼び出し側で取り出す -- 専用関数はない
+  [t.id for t in query.get_templates(xml_text)]
+  ```
+
+  `kind=`は`"material"`/`"condition"`/`"result"`のいずれかで、指定しなければ
+  (`None`、既定値)3種類まとめて返します。未知の`kind`を渡すと`ValueError`に
+  なります。`get_templates()`に`instruction_id=`はありません --
+  テンプレートとinstructionの対応はPNMLのplace/transitionトポロジー経由の
+  間接的なものにとどまり、キーワード引数として実装できるほど明確な仕様が
+  ないためです。
+
+  `get_instances()`の`instruction_id=`は、指定した`<instruction id=...>`に
+  紐づくインスタンスだけに絞り込みます。辿る経路は
+  `instruction` → (`ref`で参照する)`event` → `event`の`results_refs` →
+  `results` → `results`の`materials`/`conditions`/`results`という、
+  MaiMLスキーマ上instructionからインスタンスへ辿れる唯一の経路です
+  (instructionからインスタンスへの直接参照はありません)。指定した
+  `instruction_id`がファイル内のどの`<instruction>`にも一致しない場合は
+  `ValueError`になります(タイプミスを黙って`[]`にせず、はっきり検出する
+  ためです)。一方、`instruction_id`自体は実在するが、まだ何も紐づいて
+  いない場合は`ValueError`ではなく`[]`を返します -- この2つは意図的に
+  区別されています。`protocolFileRootType`(`<data>`/`<eventLog>`を持たない
+  手法単体ファイル)には`get_instances()`が見つけられるものが何もないため、
+  常に`[]`を返します(実在する`instruction_id`を渡してもエラーにはならず、
+  単に紐づく`event`が存在しないだけです)。
+
 ## テスト
 
 ```bash

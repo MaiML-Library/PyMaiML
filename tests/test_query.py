@@ -234,3 +234,144 @@ def test_get_namespaces_does_not_resolve_external_file_entities(tmp_path):
     # The declared namespace is still found; the entity is left unresolved
     # (no crash, no secret content anywhere in the result).
     assert query.get_namespaces(payload) == {"ex": "http://example.org/ex"}
+
+
+# ---------------------------------------------------------------------------
+# get_templates() / get_instances(): object-returning, keyword-filterable.
+# Like get_uuids()/get_keys()/get_insertion_uris(), both go through
+# serialization.loads() and therefore require schema-valid input; unlike
+# those three, they return the actual maiml_domain objects, not strings.
+# ---------------------------------------------------------------------------
+
+def test_get_templates_returns_all_kinds_by_default(minimal_root):
+    """minimal_root defines exactly one template, a materialTemplate (the
+    protocol's material_templates=[mt] -- see conftest.py). kind=None
+    should find it without the caller having to know its kind up front."""
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    templates = query.get_templates(xml)
+    assert [type(t).__name__ for t in templates] == ["MaterialTemplateType"]
+    assert templates[0].id == minimal_root.protocol.material_templates[0].id
+
+
+def test_get_templates_filters_by_kind(minimal_root):
+    """Add a conditionTemplate alongside minimal_root's existing
+    materialTemplate, at the same protocol level -- kind="material" must
+    return only the former, kind="condition" only the latter."""
+    ct = m.ConditionTemplateType(
+        id="ct1",
+        place_refs=[m.PlaceRefType(id="ctref1", ref=minimal_root.protocol.methods[0].pnmls[0].places[0].id)],
+        content=m.GlobalObjectContent(uuid=m.Uuid("11111111-1111-3111-8111-111111111111")),
+    )
+    minimal_root.protocol.condition_templates = [ct]
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+
+    material_only = query.get_templates(xml, kind="material")
+    assert [type(t).__name__ for t in material_only] == ["MaterialTemplateType"]
+
+    condition_only = query.get_templates(xml, kind="condition")
+    assert [type(t).__name__ for t in condition_only] == ["ConditionTemplateType"]
+
+    both = query.get_templates(xml)
+    assert sorted(type(t).__name__ for t in both) == ["ConditionTemplateType", "MaterialTemplateType"]
+
+
+def test_get_templates_raises_on_unknown_kind(minimal_root):
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    with pytest.raises(ValueError, match="unknown kind"):
+        query.get_templates(xml, kind="bogus")
+
+
+def test_get_templates_requires_schema_valid_maiml_like_loads_does():
+    with pytest.raises(Exception):
+        query.get_templates("<root/>")
+
+
+def test_get_templates_ids_are_available_on_the_returned_objects(minimal_root):
+    """There is no separate 'ids only' function -- the object returned by
+    get_templates() already carries .id, so the caller extracts it."""
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    ids = [t.id for t in query.get_templates(xml)]
+    assert ids == [minimal_root.protocol.material_templates[0].id]
+
+
+def test_get_instances_returns_all_kinds_by_default(minimal_root):
+    """minimal_root's <data> holds exactly one materialType instance (see
+    conftest.py: results.materials=[material])."""
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    instances = query.get_instances(xml)
+    assert [type(i).__name__ for i in instances] == ["MaterialType"]
+    assert instances[0].id == minimal_root.data.results_list[0].materials[0].id
+
+
+def test_get_instances_filters_by_kind(minimal_root):
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    assert [type(i).__name__ for i in query.get_instances(xml, kind="material")] == ["MaterialType"]
+    assert query.get_instances(xml, kind="condition") == []
+    assert query.get_instances(xml, kind="result") == []
+
+
+def test_get_instances_raises_on_unknown_kind(minimal_root):
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    with pytest.raises(ValueError, match="unknown kind"):
+        query.get_instances(xml, kind="bogus")
+
+
+def test_get_instances_requires_schema_valid_maiml_like_loads_does():
+    with pytest.raises(Exception):
+        query.get_instances("<root/>")
+
+
+def test_get_instances_with_instruction_id_follows_event_results_refs_chain(minimal_root):
+    """minimal_root's own new_complete_event() does not set results_refs
+    (see conftest.py/builders.py) -- add one linking the instruction's
+    event to the file's one <results>, and instruction_id= must then find
+    the instance that <results> holds, via
+    instruction -> event -> results_refs -> results -> materials."""
+    instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+    results_id = minimal_root.data.results_list[0].id
+    event = minimal_root.event_log.logs[0].traces[0].events[0]
+    event.results_refs = [m.ResultsRefType(id="rref1", ref=results_id)]
+
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    linked = query.get_instances(xml, instruction_id=instr_id)
+    assert [type(i).__name__ for i in linked] == ["MaterialType"]
+    assert linked[0].id == minimal_root.data.results_list[0].materials[0].id
+
+
+def test_get_instances_valid_instruction_id_with_nothing_linked_returns_empty_list(minimal_root):
+    """minimal_root's event has no results_refs by default (see
+    conftest.py's new_complete_event() call) -- a real, existing
+    instruction with nothing linked to it yet is not an error, unlike an
+    instruction_id that does not exist at all (see the next test)."""
+    instr_id = minimal_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    assert query.get_instances(xml, instruction_id=instr_id) == []
+
+
+def test_get_instances_unknown_instruction_id_raises(minimal_root):
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    with pytest.raises(ValueError, match="no <instruction id="):
+        query.get_instances(xml, instruction_id="no-such-instruction")
+
+
+def test_get_templates_works_on_protocol_only_root(protocol_only_root):
+    """A protocolFileRootType still has templates -- get_templates() does
+    not need <data>/<eventLog> to exist at all."""
+    xml = serialization.dumps(protocol_only_root)
+    templates = query.get_templates(xml)
+    assert [type(t).__name__ for t in templates] == ["MaterialTemplateType"]
+
+
+def test_get_instances_on_protocol_only_root_is_always_empty(protocol_only_root):
+    """A protocolFileRootType has no <data>/<eventLog> at all (see
+    maiml_domain.root.ProtocolFileRootType), so there is nothing
+    get_instances() could ever find -- with or without instruction_id=. A
+    *valid* instruction_id there still resolves without raising (the
+    <instruction> element itself is present); only an unknown one raises,
+    exactly as for a full maimlRootType file."""
+    instr_id = protocol_only_root.protocol.methods[0].programs[0].instructions[0].id
+    xml = serialization.dumps(protocol_only_root)
+    assert query.get_instances(xml) == []
+    assert query.get_instances(xml, instruction_id=instr_id) == []
+    with pytest.raises(ValueError, match="no <instruction id="):
+        query.get_instances(xml, instruction_id="no-such-instruction")

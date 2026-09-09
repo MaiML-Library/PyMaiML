@@ -50,6 +50,69 @@ limitations" -- dumps() re-derives them from extra_namespaces=, no
 maiml_domain class stores them anywhere), so there is no domain-model
 form of this information for get_namespaces() to read instead.
 
+get_templates() and get_instances() are a second family of functions in
+this module, alongside the four "list the X used in this file" functions
+above: instead of returning a flat list of strings, they return the
+actual maiml_domain objects themselves (MaterialTemplateType/
+ConditionTemplateType/ResultTemplateType for get_templates(),
+MaterialType/ConditionType/ResultType for get_instances() -- see
+maiml_domain.protocol and maiml_domain.data), filtered by keyword-only
+arguments. This is deliberately extensible: "get everything" is
+kind=None (the default), "get just ids" is not a separate function but
+[obj.id for obj in get_templates(xml_text)] on the caller's side (the
+object is already in hand, so there is nothing this module needs to do
+specially for that case), and a new way to narrow the result -- like
+get_instances()'s instruction_id= -- is a new keyword argument on the
+existing function, not a new function name. Both call
+pymaiml.serialization.loads(xml_text) and walk loaded.root with the same
+_iter_domain_objects() helper the four functions above use, so the same
+schema-validity requirement applies (see above).
+
+  - get_templates(xml_text, *, kind=None): kind, when given, must be one
+    of "material"/"condition"/"result" (anything else raises ValueError)
+    and restricts the result to just that template kind; kind=None (the
+    default) returns all three kinds together, in document order. A
+    template is only ever nested under a program/method/protocol
+    (maiml_domain.protocol.ProgramType/MethodType/ProtocolType's own
+    material_templates/condition_templates/result_templates lists), and
+    each of those three structural levels can define its own, separate
+    templates -- get_templates() does not distinguish which level a given
+    template came from, since maiml_domain does not tag a template object
+    with that itself; inspect the returned object's own id/ref_types, or
+    walk loaded.root directly, if that distinction matters to a caller.
+    There is no instruction_id= filter here: a template's only documented
+    connection to an instruction is indirect, through PNML place/
+    transition/arc topology (place_refs/transition_refs), which is too
+    loosely defined to implement as a keyword filter without a more
+    specific request for it.
+  - get_instances(xml_text, *, kind=None, instruction_id=None): kind
+    works exactly like get_templates()'s, restricting the result to
+    "material"/"condition"/"result" (ValueError for anything else),
+    default None returns all three kinds. instruction_id, when given,
+    restricts the result to instances reachable from that
+    <instruction id="...">: via every <event ref="instruction_id"> in
+    xml_text's eventLog, through that event's own results_refs, to the
+    <results> element(s) those refer to, and finally that <results>
+    element's own materials/conditions/results (in that field order --
+    see maiml_domain.data.ResultsType). This is the only link from an
+    instruction to instances the MaiML schema documents (see
+    maiml_domain.event_log.EventType.ref/results_refs and
+    maiml_domain.data.ResultsType) -- there is no direct
+    instruction-to-instance reference. instruction_id must name an
+    <instruction> that actually exists in xml_text or this raises
+    ValueError (a typo'd id is a mistake worth failing loudly on); an
+    instruction_id that does exist but has no events/instances linked to
+    it (yet) is not an error and returns an empty list -- those are two
+    different, deliberately distinguished situations. A
+    ProtocolFileRootType document (a protocol-only file, no <data> or
+    <eventLog> -- see maiml_domain.root) has no instances at all, so
+    get_instances() on one always returns [] regardless of kind/
+    instruction_id -- a legitimate instruction_id there still resolves
+    without raising (protocol-only files still have <instruction>
+    elements), it just always finds zero linked events, since there is no
+    eventLog at all to hold one; only an unknown instruction_id raises
+    ValueError there, same as for any other file.
+
 Every maiml_domain object is a plain Python object (or dataclass) whose
 own __init__ assigns its declared attributes in the same order its
 docstring/the XSD sequence it implements lists them in. get_uuids(),
@@ -76,7 +139,30 @@ from lxml import etree
 from . import serialization
 from ._xml_security import make_untrusted_input_parser
 
-__all__ = ["get_uuids", "get_keys", "get_namespaces", "get_insertion_uris"]
+__all__ = [
+    "get_uuids",
+    "get_keys",
+    "get_namespaces",
+    "get_insertion_uris",
+    "get_templates",
+    "get_instances",
+]
+
+# get_templates()/get_instances(): kind= maps a short, stable name to the
+# maiml_domain class(es) it means. Adding a new kind (there is no fourth
+# one documented today) is a one-line addition to these two dicts, not a
+# new function.
+_TEMPLATE_CLASSES = {
+    "material": m.MaterialTemplateType,
+    "condition": m.ConditionTemplateType,
+    "result": m.ResultTemplateType,
+}
+
+_INSTANCE_CLASSES = {
+    "material": m.MaterialType,
+    "condition": m.ConditionType,
+    "result": m.ResultType,
+}
 
 
 # Values that are never themselves a maiml_domain object and are never
@@ -126,6 +212,24 @@ def _local_name(tag) -> str:
     if not isinstance(tag, str):
         return ""
     return tag.split("}", 1)[-1] if "}" in tag else tag
+
+
+def _kind_classes(mapping: Dict[str, type], kind: Optional[str]) -> tuple:
+    """Resolve get_templates()/get_instances()'s kind= keyword to the
+    maiml_domain class(es) isinstance() should filter by: every class in
+    `mapping` when kind is None, or just mapping[kind] when kind is given
+    -- raising ValueError (not KeyError) for a kind that isn't one of
+    mapping's keys, since that is a caller mistake worth naming clearly
+    (and listing the valid options for) rather than leaking a bare
+    KeyError."""
+    if kind is None:
+        return tuple(mapping.values())
+    try:
+        return (mapping[kind],)
+    except KeyError:
+        raise ValueError(
+            f"unknown kind {kind!r} -- expected one of {sorted(mapping)}, or None for all of them"
+        ) from None
 
 
 def _parse_root(xml_text: Union[str, bytes]):
@@ -274,3 +378,120 @@ def get_insertion_uris(xml_text: Union[str, bytes]) -> List[str]:
         if isinstance(obj, m.InsertionType)
     ]
     return list(dict.fromkeys(values))
+
+
+def get_templates(xml_text: Union[str, bytes], *, kind: Optional[str] = None) -> List[object]:
+    """
+    Every material/condition/resultTemplate in xml_text's maiml_domain
+    object tree (loads(xml_text).root), in document order, as the actual
+    maiml_domain objects themselves (MaterialTemplateType/
+    ConditionTemplateType/ResultTemplateType -- see maiml_domain.protocol),
+    not ids or strings. Want just the ids? [t.id for t in
+    get_templates(xml_text)] -- there is no separate "ids only" function,
+    the object already has everything on it.
+
+    kind, if given, must be one of "material"/"condition"/"result" and
+    restricts the result to just that template kind (ValueError for
+    anything else); the default None returns all three kinds together.
+
+    A template can be defined at any of three structural levels --
+    ProgramType, MethodType, or ProtocolType each have their own
+    material_templates/condition_templates/result_templates -- and this
+    walks all of them without distinguishing which level a given result
+    came from (maiml_domain does not tag a template object with that
+    itself); compare returned objects' .id/template_refs, or walk
+    loaded.root directly, if that distinction matters. There is no
+    instruction_id= filter: a template's only documented connection to an
+    instruction is indirect, through PNML place/transition/arc topology,
+    which is too loosely defined to implement as a keyword filter here
+    (see the module docstring).
+
+    xml_text must be schema-valid MaiML: this calls
+    pymaiml.serialization.loads(xml_text) and raises whatever loads()
+    raises for anything else (see the module docstring).
+    """
+    loaded = serialization.loads(xml_text)
+    classes = _kind_classes(_TEMPLATE_CLASSES, kind)
+    return [obj for obj in _iter_domain_objects(loaded.root) if isinstance(obj, classes)]
+
+
+def get_instances(
+    xml_text: Union[str, bytes],
+    *,
+    kind: Optional[str] = None,
+    instruction_id: Optional[str] = None,
+) -> List[object]:
+    """
+    Every material/condition/result *instance* in xml_text's maiml_domain
+    object tree (loads(xml_text).root), in document order, as the actual
+    maiml_domain objects themselves (MaterialType/ConditionType/
+    ResultType -- see maiml_domain.data; each carries its own .ref back to
+    the template it is an instance of). Want just the ids? [i.id for i in
+    get_instances(xml_text)] -- same as get_templates(), no separate
+    function for that.
+
+    kind works exactly like get_templates()'s: one of "material"/
+    "condition"/"result" to restrict to that kind (ValueError for
+    anything else), or the default None for all three kinds together.
+
+    instruction_id, if given, restricts the result to instances reachable
+    from the <instruction id=instruction_id> in xml_text: via every
+    <event ref=instruction_id> in its eventLog, through that event's own
+    results_refs, to the <results> element(s) they refer to, and finally
+    that <results> element's own materials/conditions/results (see
+    maiml_domain.event_log.EventType and maiml_domain.data.ResultsType).
+    This is the only link from an instruction to instances the MaiML
+    schema documents -- there is no direct instruction-to-instance
+    reference, only this instruction -> event -> results -> instance
+    chain.
+
+    instruction_id must name an <instruction> that actually exists
+    somewhere in xml_text, or this raises ValueError -- a typo'd id is a
+    mistake worth failing loudly on, not silently returning []. An
+    instruction_id that does exist but has no events/instances linked to
+    it (yet) is not an error: that returns [], deliberately distinct from
+    the ValueError case above.
+
+    A protocolFileRootType document (a protocol-only file -- see
+    maiml_domain.root.ProtocolFileRootType, which has no data/eventLog at
+    all) has no instances to find, so get_instances() on one always
+    returns [] regardless of kind or instruction_id -- a legitimate
+    instruction_id there still resolves without raising (the
+    <instruction> itself is still present), it just always finds zero
+    linked events (there is no eventLog at all to hold one) and so
+    returns []; only an instruction_id that does not match any
+    <instruction> in the file raises ValueError, exactly as for any other
+    file.
+
+    xml_text must be schema-valid MaiML: this calls
+    pymaiml.serialization.loads(xml_text) and raises whatever loads()
+    raises for anything else (see the module docstring).
+    """
+    loaded = serialization.loads(xml_text)
+    all_objs = list(_iter_domain_objects(loaded.root))
+    classes = _kind_classes(_INSTANCE_CLASSES, kind)
+
+    if instruction_id is None:
+        return [obj for obj in all_objs if isinstance(obj, classes)]
+
+    instruction_ids = {obj.id for obj in all_objs if isinstance(obj, m.InstructionType)}
+    if instruction_id not in instruction_ids:
+        raise ValueError(
+            f"get_instances(): no <instruction id={instruction_id!r}> found in xml_text"
+        )
+
+    results_ids = {
+        results_ref.ref
+        for obj in all_objs
+        if isinstance(obj, m.EventType) and obj.ref == instruction_id
+        for results_ref in obj.results_refs
+    }
+
+    instances: List[object] = []
+    for obj in all_objs:
+        if isinstance(obj, m.ResultsType) and obj.id in results_ids:
+            instances.extend(obj.materials)
+            instances.extend(obj.conditions)
+            instances.extend(obj.results)
+
+    return [obj for obj in instances if isinstance(obj, classes)]

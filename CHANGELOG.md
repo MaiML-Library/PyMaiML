@@ -505,6 +505,64 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   `InsertionType`が`uri`を必須とすることを検証するテストを追加)を
   更新しました。ユーザー要望(「MaiML-Domainを使用するというルールの
   もと、コードを修正して」)。
+- **`pymaiml.query`に`get_templates()`/`get_instances()`を追加。**
+  上記4関数(文字列のフラットな一覧を返す)とは別の、もう1つの関数群です。
+  こちらは文字列ではなく`maiml_domain`のオブジェクトそのものを返し、
+  キーワード引数でフィルタする設計にしました(ユーザーが選択: 「オブジェクト
+  返却+キーワード引数フィルタ」。他候補として、機能ごとに個別関数を並べる
+  設計、fluentなクエリビルダ設計も提示しましたが、「全て取得・idだけ取得・
+  instructionに紐づくものを取得…など機能を増やせるようにしたい」という
+  要望に対し、新しい絞り込み軸をキーワード引数の追加だけで拡張できる
+  この設計が最も適すると判断されました)。
+  - `get_templates(xml_text, *, kind=None)` -- material/condition/
+    resultTemplateそのもの(`MaterialTemplateType`/`ConditionTemplateType`/
+    `ResultTemplateType`)を返します。`kind`は`"material"`/`"condition"`/
+    `"result"`のいずれか(未指定・`None`なら3種類まとめて)。
+  - `get_instances(xml_text, *, kind=None, instruction_id=None)` --
+    material/condition/resultそのもの(`MaterialType`/`ConditionType`/
+    `ResultType`)を返します。`kind`は`get_templates()`と同様。
+    `instruction_id`を指定すると、その`<instruction id=...>`に紐づく
+    インスタンスだけに絞り込みます。
+  「idだけ取得」は専用関数を設けず、返ってきたオブジェクトから呼び出し側が
+  `.id`を読むだけで済む設計です(`[t.id for t in get_templates(xml_text)]`)。
+  `kind`に`"material"`/`"condition"`/`"result"`以外を渡すと`ValueError`。
+
+  `instruction_id`の解決は、MaiMLスキーマがinstructionからインスタンスへ
+  辿れる唯一の経路である`<instruction>` → (`ref`で参照する)`<event>` →
+  `<event>`の`results_refs` → `<results>` → `<results>`の
+  `materials`/`conditions`/`results`という連鎖をそのまま辿ります
+  (`maiml_domain.event_log.EventType.ref`/`results_refs`、
+  `maiml_domain.data.ResultsType`参照)。instructionからテンプレートへの
+  直接的な参照はスキーマ上存在せず、PNMLのplace/transition/arcトポロジー
+  経由の間接的なものにとどまるため、`get_templates()`には
+  `instruction_id=`フィルタを設けていません。
+
+  `instruction_id`に、ファイル内のどの`<instruction>`の`id`とも一致しない
+  値を渡すと`ValueError`を送出します(タイプミスを黙って`[]`にせず検出する
+  ため)。一方、`instruction_id`自体は実在するインスタンスがまだ何も
+  紐づいていない場合は、これとは区別してエラーにせず`[]`を返します。
+  `protocolFileRootType`(`<data>`/`<eventLog>`を持たない手法単体ファイル
+  -- `maiml_domain.root.ProtocolFileRootType`)には見つけられる
+  インスタンスがそもそも存在しないため、`get_instances()`は
+  `kind`/`instruction_id`によらず常に`[]`を返します。実在する
+  `instruction_id`を渡した場合もエラーにはなりません
+  (`<instruction>`自体は存在するため)。単に紐づく`<event>`が
+  1つも無いだけです。
+
+  両関数とも`_iter_domain_objects()`(上記エントリで追加した汎用の木構造
+  走査ヘルパー)をそのまま再利用しており、`pymaiml.query`内に新しい
+  走査ロジックは追加していません。
+
+  `pymaiml/query.py`の`__all__`とモジュールdocstring、`README.md`の
+  `pymaiml.query`節、`pymaiml/__init__.py`のモジュール概要を更新し、
+  `tests/test_query.py`に14件のテスト
+  (`kind=`によるフィルタ・未知の`kind`での`ValueError`・
+  `instruction_id`による絞り込みとその`event`→`results_refs`連鎖・
+  未知の`instruction_id`での`ValueError`・実在するが何も紐づいていない
+  `instruction_id`での`[]`・`protocolFileRootType`での挙動)を追加しました。
+  ユーザー要望(「次は、template一覧、インスタンス一覧を取得する機能を
+  つけたい。全て取得・idだけ取得・instructionに紐づくものを取得、、、
+  など機能を増やせるようにしたい。」)。
 
 ## [0.1.0] - 未リリース
 
