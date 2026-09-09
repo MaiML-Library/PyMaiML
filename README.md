@@ -315,7 +315,11 @@ pip install --no-deps -e .
   設計です(「id だけ欲しい」場合は関数を分けず、返ってきたオブジェクトから
   呼び出し側で`.id`を取り出すだけで済みます)。両関数とも
   `pymaiml.serialization.loads()`を経由するため、上記3関数と同じくXMLは
-  スキーマ妥当である必要があります。
+  スキーマ妥当である必要があります。戻り値の型ヒントは`List[object]`では
+  なく、`query.Template`(`MaterialTemplateType`/`ConditionTemplateType`/
+  `ResultTemplateType`の`Union`)・`query.Instance`(`MaterialType`/
+  `ConditionType`/`ResultType`の`Union`)という具体的な型エイリアスで
+  表現しています。
 
   ```python
   from pymaiml import query
@@ -344,7 +348,13 @@ pip install --no-deps -e .
   共通の経路は、指定した`<instruction id=...>`の`transitionRef`が指す
   `<transition>` → その`<transition>`に触れる`<arc>` → その`<arc>`の
   もう一方の`<place>` → その`<place>`を`placeRef`で指すテンプレート、という
-  PNMLトポロジー経由の連鎖です。`get_templates()`はここで止まり、その
+  PNMLトポロジー経由の連鎖です。各段階は`id`文字列同士が一致するだけでは
+  なく、対応する`maiml_domain`オブジェクト(実在する`TransitionType`・
+  `PlaceType`)が実際に存在することも確認します -- `maiml_domain`自体は
+  IDREFの解決可能性を保証しないため(MaiML-Schema-1_0のXSDのような強制は
+  ありません)、たまたま一致した文字列だけでテンプレートに辿り着かない
+  ようにするためです(「Domainを問い合わせて答える、文字列一致で答えない」
+  というPyMaiMLの設計方針に沿っています)。`get_templates()`はここで止まり、その
   テンプレートを返します。`get_instances()`はさらにもう1段、そのテンプレート
   を`ref`で指すインスタンスまで辿ります。加えて`get_instances()`だけは、
   もう1つの独立した経路 -- `instruction` → (`ref`で参照する)`event` →

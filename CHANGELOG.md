@@ -613,6 +613,45 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   概要も更新)。ユーザー要望(「instruction→transitionRef→transition→
   place→template→インスタンスという経路で絞り込んでください」
   「templateの場合も同様に」)。
+- **レビュー指摘を受け、`_templates_linked_to_instruction()`のPNML
+  トポロジー解決を、id文字列同士の一致だけでなく実在する`maiml_domain`
+  オブジェクトの確認を挟むように修正しました。** また
+  `get_templates()`/`get_instances()`の戻り値型を`List[object]`から、
+  具体的な`Template`/`Instance`型エイリアスへ変更し、`pymaiml.query`の
+  モジュールdocstringを現在の仕様中心に整理しました。レビュー文書
+  `PyMaiML_query_review.md`(3項目、優先度順)への対応です。
+  - **(優先度: 高)** これまでの実装は、`instruction.transition_refs`の
+    `ref`と`ArcType.source`/`target`の文字列を直接照合し、一致した反対側
+    のIDをそのまま`place_ids`として扱っていました。`maiml_domain`自体は
+    IDREFの解決可能性を保証しない(MaiML-Schema-1_0のXSDのような強制が
+    ない)ため、実在しない`TransitionType`/`PlaceType`を指す偶然の文字列
+    一致だけでもテンプレートまで辿り着いてしまう可能性がありました。
+    修正後は、`instruction.transition_refs`が指すIDのうち実在する
+    `TransitionType.id`のみを対象にし、`<arc>`の反対側から得たIDも実在
+    する`PlaceType.id`のみを対象にしてから、初めてテンプレートの
+    `place_refs`と照合するようにしました(`all_objs`に実際に存在する
+    オブジェクトの集合と`&`を取る形)。「Domainを正として問い合わせる」
+    というPyMaiMLの設計方針に一致させるための変更で、`get_templates()`/
+    `get_instances()`の両方のPNML経路に影響します。
+    `tests/test_query.py`に、実在しない`TransitionType`への偶然のID
+    一致だけでは何も見つからないことを検証する回帰テストを追加しました
+    (`_templates_linked_to_instruction()`を直接、手作りのオブジェクトで
+    呼び出すテスト -- `maiml_domain`自身のコンストラクタではこの
+    ぶら下がった参照形状を通常再現できないため)。
+  - **(優先度: 中)** `get_templates()`/`get_instances()`の戻り値型を
+    `List[object]`から、新設した型エイリアス`Template = Union[
+    MaterialTemplateType, ConditionTemplateType, ResultTemplateType]`・
+    `Instance = Union[MaterialType, ConditionType, ResultType]`
+    (`pymaiml.query`から`__all__`経由でエクスポート)を使った
+    `List[Template]`/`List[Instance]`へ変更しました。動作は変わりません
+    が、公開SDK APIとしてIDEの補完や静的型チェックが効くようになります。
+    軽量な`TemplateInfo`/`InstanceInfo`のような別DTOは新設せず、
+    `maiml_domain`オブジェクトをそのまま返す既存方針は維持しています。
+  - **(優先度: 低)** `pymaiml/query.py`のモジュールdocstringを、
+    旧raw XML実装からの変更経緯(なぜ書き換えたか、以前の実装との比較)
+    を中心とした説明から、現在の6関数の役割・入力・戻り値・主要な
+    filter条件・意味論を中心とした説明に整理しました。変更経緯自体は
+    削除せず、本CHANGELOGを参照するよう一文だけ残しています。
 
 ## [0.1.0] - 未リリース
 

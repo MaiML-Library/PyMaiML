@@ -294,6 +294,24 @@ def test_get_templates_ids_are_available_on_the_returned_objects(minimal_root):
     assert ids == [minimal_root.protocol.material_templates[0].id]
 
 
+def test_template_and_instance_type_aliases_cover_the_right_classes(minimal_root):
+    """get_templates()/get_instances() are typed to return Template/
+    Instance (Union aliases exported from this module), not a bare
+    List[object] -- verify every object either function actually returns
+    is an instance of its alias, and that the aliases are built from
+    exactly the three material/condition/result classes each side uses."""
+    assert query.Template.__args__ == (
+        m.MaterialTemplateType, m.ConditionTemplateType, m.ResultTemplateType,
+    )
+    assert query.Instance.__args__ == (m.MaterialType, m.ConditionType, m.ResultType)
+
+    xml = serialization.dumps(minimal_root, extra_namespaces={"lifecycle": LIFECYCLE_NS})
+    for t in query.get_templates(xml):
+        assert isinstance(t, query.Template.__args__)
+    for i in query.get_instances(xml):
+        assert isinstance(i, query.Instance.__args__)
+
+
 def test_get_instances_returns_all_kinds_by_default(minimal_root):
     """minimal_root's <data> holds exactly one materialType instance (see
     conftest.py: results.materials=[material])."""
@@ -359,6 +377,38 @@ def test_get_templates_with_instruction_id_follows_pnml_topology(minimal_root):
     linked = query.get_templates(xml, instruction_id=instr_id)
     assert [type(t).__name__ for t in linked] == ["MaterialTemplateType"]
     assert linked[0].id == minimal_root.protocol.material_templates[0].id
+
+
+def test_templates_linked_to_instruction_requires_a_real_transition_and_place():
+    """_templates_linked_to_instruction() must not match a template via a
+    coincidental id-string join alone: an instruction's transitionRef can
+    name an id that happens to equal one of an <arc>'s endpoints without
+    any real TransitionType in the document actually having that id (a
+    dangling/coincidental IDREF -- maiml_domain does not itself enforce
+    IDREF resolvability the way MaiML-Schema-1_0's XSD does). PyMaiML's
+    query rule is to answer from real Domain objects, not from a string
+    match, so this must find nothing. Same for the place-side hop: only
+    ids that are an actual PlaceType.id apply. Hand-built (not via
+    minimal_root) because maiml_domain's own constructors would not
+    normally produce this dangling shape."""
+    real_place = m.PlaceType(id="real-place")
+    mt = m.MaterialTemplateType(
+        id="mt1",
+        place_refs=[m.PlaceRefType(id="pref1", ref=real_place.id)],
+        content=m.GlobalObjectContent(uuid=m.Uuid("11111111-1111-3111-8111-111111111111")),
+    )
+    # sneaky_arc's target coincidentally equals the instruction's
+    # transitionRef -- but no TransitionType with that id exists anywhere.
+    fake_trans_id = "coincidental-id"
+    sneaky_arc = m.ArcType(id="arc1", source=real_place.id, target=fake_trans_id)
+    instr = m.InstructionType(
+        id="instr1",
+        transition_refs=[m.TransitionRefType(id="tref1", ref=fake_trans_id)],
+        content=m.GlobalObjectContent(uuid=m.Uuid("22222222-2222-3222-8222-222222222222")),
+    )
+    all_objs = [real_place, mt, sneaky_arc, instr]  # deliberately no TransitionType
+
+    assert query._templates_linked_to_instruction(instr, all_objs) == []
 
 
 def test_get_templates_with_instruction_id_and_kind_combine(minimal_root):

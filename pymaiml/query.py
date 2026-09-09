@@ -1,145 +1,59 @@
 """
 pymaiml.query
-==============
+=============
 
-"List the X used in this file" utilities: every UUID, every property/
-content/chain/parent key=, and every external <insertion> file URI.
+Read-only query utilities for MaiML documents.
 
-get_uuids(), get_keys(), and get_insertion_uris() are built on top of
-maiml_domain: each calls pymaiml.serialization.loads(xml_text) first and
-reads its answer off the resulting maiml_domain object tree
-(loaded.root), not off the raw XML. This module used to walk the raw XML
-directly instead (generic lxml tag-name/attribute scans), specifically so
-it could work on input that was not yet schema-valid, without paying for
-loads()'s full maiml_domain construction. That independence has been
-given up in favor of a stronger rule: PyMaiML's Python-facing view of
-"what's in this MaiML file" should always be read off maiml_domain, the
-one canonical domain model every Python tool in this project shares, not
-reconstructed a second time by an independent XML-scanning implementation
-that knows the same tag/attribute names by coincidence and can silently
-drift out of sync with what serialization.py actually reads and writes.
+get_uuids(), get_keys(), get_insertion_uris(), get_templates(), and
+get_instances() all read their answer off the maiml_domain object tree
+that pymaiml.serialization.loads(xml_text) builds -- so xml_text must be
+schema-valid MaiML for all five (loads() raises otherwise -- typically
+ValueError, or an lxml parse error for input that is not even
+well-formed XML -- and these functions do not catch or soften that).
+Their XXE/entity-expansion/network hardening is therefore whatever
+loads() does; see pymaiml._xml_security.make_untrusted_input_parser()
+and tests/test_xml_security.py's loads() coverage.
 
-Consequences worth knowing before reaching for these three functions:
+get_namespaces() is the one exception: namespace declarations are an
+XML-level concept that maiml_domain's object tree does not represent at
+all (see pymaiml.serialization's own "Known limitations" -- dumps()
+re-derives them from extra_namespaces=, no maiml_domain class stores
+them anywhere), so it parses xml_text directly instead, with the same
+untrusted-input hardening. xml_text does NOT need to be schema-valid for
+get_namespaces() specifically.
 
-  - xml_text now has to be schema-valid MaiML -- a <maiml
-    xsi:type="maimlRootType"|"protocolFileRootType"> document with every
-    element maiml_domain's constructors require present. loads() raises
-    (typically ValueError, or an lxml parse error for input that is not
-    even well-formed XML) otherwise, exactly as it does for any other
-    caller -- these functions do not catch or soften that. Using them as
-    a pre-validation triage step on a file that is not schema-valid yet,
-    which this module's raw-XML implementation used to support, is no
-    longer possible: validate() or load() the file first.
-  - XXE/entity-expansion/network hardening for these three functions is
-    now whatever pymaiml.serialization.loads() does -- see
-    pymaiml._xml_security.make_untrusted_input_parser() and
-    tests/test_xml_security.py's loads() coverage. This module does not
-    parse xml_text itself for them at all, so there is no separate
-    hardening path here to regress.
-  - An <insertion> with no uri is no longer representable as an input at
-    all: maiml_domain.InsertionType.__post_init__ requires a non-empty
-    uri, so get_insertion_uris() can no longer be handed that malformed
-    shape in the first place (previously a raw-XML concern, this class of
-    problem simply cannot reach this function anymore).
+Two families of functions live here:
 
-get_namespaces() is the one exception and still parses xml_text directly
-with pymaiml._xml_security.make_untrusted_input_parser(): namespace
-declarations are an XML-level concept that maiml_domain's object tree
-does not represent at all (see pymaiml.serialization's own "Known
-limitations" -- dumps() re-derives them from extra_namespaces=, no
-maiml_domain class stores them anywhere), so there is no domain-model
-form of this information for get_namespaces() to read instead.
+  - get_uuids(), get_keys(), get_namespaces(), get_insertion_uris()
+    return flat lists of strings (a dict, for get_namespaces()) -- every
+    X used in this file. get_uuids() keeps duplicates (a uuid is meant to
+    identify one object, so a repeated one is itself a fact worth seeing
+    -- see its own docstring); the other three deduplicate, first
+    occurrence kept.
+  - get_templates() and get_instances() return the actual maiml_domain
+    objects themselves (see the Template/Instance type aliases below),
+    filtered by keyword-only arguments: kind= picks material/condition/
+    result, instruction_id= narrows by PNML topology (see each
+    function's own docstring for the exact semantics -- they share the
+    same instruction_id= chain via _templates_linked_to_instruction()).
+    This is deliberately extensible: "get everything" is kind=None (the
+    default); "get just ids" is [obj.id for obj in get_templates(xml)]
+    on the caller's side, not a separate function; a new way to narrow
+    the result is a new keyword argument on the existing function, not a
+    new function name.
 
-get_templates() and get_instances() are a second family of functions in
-this module, alongside the four "list the X used in this file" functions
-above: instead of returning a flat list of strings, they return the
-actual maiml_domain objects themselves (MaterialTemplateType/
-ConditionTemplateType/ResultTemplateType for get_templates(),
-MaterialType/ConditionType/ResultType for get_instances() -- see
-maiml_domain.protocol and maiml_domain.data), filtered by keyword-only
-arguments. This is deliberately extensible: "get everything" is
-kind=None (the default), "get just ids" is not a separate function but
-[obj.id for obj in get_templates(xml_text)] on the caller's side (the
-object is already in hand, so there is nothing this module needs to do
-specially for that case), and a new way to narrow the result -- like
-get_instances()'s instruction_id= -- is a new keyword argument on the
-existing function, not a new function name. Both call
-pymaiml.serialization.loads(xml_text) and walk loaded.root with the same
-_iter_domain_objects() helper the four functions above use, so the same
-schema-validity requirement applies (see above).
+All five loads()-based functions walk the maiml_domain object tree with
+the same generic, no-per-class-knowledge helper, _iter_domain_objects():
+depth-first through every non-leaf attribute (vars(obj), in each class's
+own __init__ assignment order) and every list/tuple element. A class
+maiml_domain adds in the future is automatically covered without this
+module needing to know about it specifically -- which is also why the
+"document order" these functions report is only approximate, not
+guaranteed byte-for-byte identical to the source XML's element order in
+every edge case.
 
-  - get_templates(xml_text, *, kind=None, instruction_id=None): kind,
-    when given, must be one of "material"/"condition"/"result" (anything
-    else raises ValueError) and restricts the result to just that
-    template kind; kind=None (the default) returns all three kinds
-    together, in document order. A template is only ever nested under a
-    program/method/protocol (maiml_domain.protocol.ProgramType/
-    MethodType/ProtocolType's own material_templates/condition_templates/
-    result_templates lists), and each of those three structural levels
-    can define its own, separate templates -- get_templates() does not
-    distinguish which level a given template came from, since
-    maiml_domain does not tag a template object with that itself; inspect
-    the returned object's own id/ref_types, or walk loaded.root directly,
-    if that distinction matters to a caller. instruction_id, when given,
-    restricts the result to templates reachable from that
-    <instruction id="..."> via PNML topology -- see
-    _templates_linked_to_instruction() and get_instances()'s own
-    instruction_id= docstring below for the exact chain and the
-    unknown-id-raises-vs-nothing-linked-returns-[] distinction, which
-    applies here identically.
-  - get_instances(xml_text, *, kind=None, instruction_id=None): kind
-    works exactly like get_templates()'s, restricting the result to
-    "material"/"condition"/"result" (ValueError for anything else),
-    default None returns all three kinds. instruction_id, when given,
-    restricts the result to instances reachable from that
-    <instruction id="..."> via either of two paths, unioned together:
-      1. instruction -> event -> results_refs -> results -> instances:
-         via every <event ref="instruction_id"> in xml_text's eventLog,
-         through that event's own results_refs, to the <results>
-         element(s) those refer to, and finally that <results> element's
-         own materials/conditions/results (see maiml_domain.event_log.
-         EventType.ref/results_refs and maiml_domain.data.ResultsType).
-         This is "which instances this instruction's execution actually
-         recorded".
-      2. instruction -> transitionRef -> transition -> arc -> place ->
-         template -> instances whose .ref names that template: the same
-         PNML topology chain get_templates()'s instruction_id= walks
-         (maiml_domain.pnml.ArcType/PlaceType, maiml_domain.ref_types.
-         TransitionRefType/PlaceRefType), one hop further to every
-         instance of a template reachable that way. This is "which
-         instances belong to a template this instruction's transitions
-         are wired to", regardless of whether any event has recorded one.
-    There is no other, direct instruction-to-instance reference in the
-    MaiML schema -- these two chains are the only ones. instruction_id
-    must name an <instruction> that actually exists in xml_text or this
-    raises ValueError (a typo'd id is a mistake worth failing loudly on);
-    an instruction_id that does exist but has nothing reachable via
-    either path (yet) is not an error and returns an empty list -- those
-    are two different, deliberately distinguished situations. A
-    ProtocolFileRootType document (a protocol-only file, no <data> or
-    <eventLog> -- see maiml_domain.root) has no instances at all, so
-    get_instances() on one always returns [] regardless of kind/
-    instruction_id -- a legitimate instruction_id there still resolves
-    without raising, and path 2's templates can still be found, it just
-    never finds an actual instance object to return; only an unknown
-    instruction_id raises ValueError there, same as for any other file.
-    get_templates() on a protocol-only file works normally, including
-    with instruction_id=, since the whole chain it uses lives under
-    <protocol>.
-
-Every maiml_domain object is a plain Python object (or dataclass) whose
-own __init__ assigns its declared attributes in the same order its
-docstring/the XSD sequence it implements lists them in. get_uuids(),
-get_keys(), and get_insertion_uris() all walk the object tree with the
-same generic, no-per-class-knowledge helper, _iter_domain_objects():
-depth-first through every non-leaf attribute value (vars(obj), in
-insertion order) and every list/tuple element, in whatever order that
-happens to be for the class in question -- which is why the ordering
-these three functions report is described as "document order" only
-approximately, not guaranteed byte-for-byte identical to the original
-XML's element order in every edge case. A class maiml_domain adds in the
-future is automatically covered without this module needing to know
-about it specifically.
+See CHANGELOG.md for the history of this module (it originally parsed
+raw XML directly instead of going through maiml_domain).
 """
 from __future__ import annotations
 
@@ -160,7 +74,16 @@ __all__ = [
     "get_insertion_uris",
     "get_templates",
     "get_instances",
+    "Template",
+    "Instance",
 ]
+
+# get_templates()/get_instances() return the actual maiml_domain objects,
+# not a separate DTO -- these aliases just make that precise in type
+# hints (IDE completion, static checking) instead of the two functions
+# being typed as List[object].
+Template = Union[m.MaterialTemplateType, m.ConditionTemplateType, m.ResultTemplateType]
+Instance = Union[m.MaterialType, m.ConditionType, m.ResultType]
 
 # get_templates()/get_instances(): kind= maps a short, stable name to the
 # maiml_domain class(es) it means. Adding a new kind (there is no fourth
@@ -265,29 +188,53 @@ def _find_instruction(all_objs: List[object], instruction_id: str, fn_name: str)
     raise ValueError(f"{fn_name}(): no <instruction id={instruction_id!r}> found in xml_text")
 
 
-def _templates_linked_to_instruction(instruction: "m.InstructionType", all_objs: List[object]) -> List[object]:
+def _templates_linked_to_instruction(instruction: "m.InstructionType", all_objs: List[object]) -> List[Template]:
     """Every template (MaterialTemplateType/ConditionTemplateType/
     ResultTemplateType) reachable from `instruction` via PNML topology:
     instruction.transition_refs -> the TransitionType(s) they name -> every
     <arc> touching one of those transitions -> the PlaceType on the arc's
     other end -> every template whose own place_refs names that place.
 
+    Every hop is checked against the actual maiml_domain objects present
+    in all_objs, not against id strings alone: transition_refs/place_refs
+    are IDREFs that could in principle name an id nothing in the document
+    actually has (maiml_domain does not itself enforce IDREF resolvability
+    the way MaiML-Schema-1_0's XSD does -- see the maiml-schema-validator
+    skill's REF-01/02/03 rules), and pymaiml.query's own rule is to answer
+    "what does the Domain say" rather than resolve a coincidental string
+    match. Concretely: instruction.transition_refs' ids are intersected
+    against real TransitionType.id values before matching them against
+    <arc> endpoints, and the ids arcs point at are intersected against
+    real PlaceType.id values before matching them against a template's
+    place_refs.
+
     An arc's source/target can be either a place or a transition id
     (ArcType does not distinguish -- see maiml_domain.pnml), so this checks
-    both ends of every arc against the instruction's transition ids and
-    takes whichever end matched as the candidate place id; a transition
-    id accidentally picked up this way would simply match no template's
-    place_refs; and is used only by get_templates()/get_instances()'s
-    instruction_id= filter, shared so both walk the exact same path.
+    both ends of every arc against the instruction's (verified) transition
+    ids and takes whichever end matched as the candidate place id, then
+    keeps only candidates that are actually a PlaceType's id. Used only by
+    get_templates()/get_instances()'s instruction_id= filter, shared so
+    both walk the exact same path.
     """
-    transition_ids = {tref.ref for tref in instruction.transition_refs}
-    place_ids: Set[str] = set()
+    requested_transition_ids = {tref.ref for tref in instruction.transition_refs}
+    transition_ids = {
+        obj.id
+        for obj in all_objs
+        if isinstance(obj, m.TransitionType) and obj.id in requested_transition_ids
+    }
+
+    candidate_place_ids: Set[str] = set()
     for obj in all_objs:
-        if isinstance(obj, m.ArcType):
-            if obj.source in transition_ids:
-                place_ids.add(obj.target)
-            if obj.target in transition_ids:
-                place_ids.add(obj.source)
+        if not isinstance(obj, m.ArcType):
+            continue
+        if obj.source in transition_ids:
+            candidate_place_ids.add(obj.target)
+        if obj.target in transition_ids:
+            candidate_place_ids.add(obj.source)
+
+    actual_place_ids = {obj.id for obj in all_objs if isinstance(obj, m.PlaceType)}
+    place_ids = candidate_place_ids & actual_place_ids
+
     template_classes = tuple(_TEMPLATE_CLASSES.values())
     return [
         obj
@@ -442,7 +389,7 @@ def get_templates(
     *,
     kind: Optional[str] = None,
     instruction_id: Optional[str] = None,
-) -> List[object]:
+) -> List[Template]:
     """
     Every material/condition/resultTemplate in xml_text's maiml_domain
     object tree (loads(xml_text).root), in document order, as the actual
@@ -469,20 +416,22 @@ def get_templates(
     <transitionRef> the instruction names -> the <transition>(s) those
     identify -> every <arc> touching one of those transitions -> the
     <place> on the arc's other end -> every template whose own
-    <placeRef> names that place (see maiml_domain.pnml.ArcType/PlaceType,
-    maiml_domain.ref_types.TransitionRefType/PlaceRefType). This is the
-    only link from an instruction to a template the MaiML schema
-    documents -- there is no direct instruction-to-template reference.
-    instruction_id must name an <instruction> that actually exists
-    somewhere in xml_text, or this raises ValueError (a typo'd id is a
-    mistake worth failing loudly on); an instruction_id that does exist
-    but has no template reachable from it (yet) is not an error and
-    returns [] instead -- see get_instances()'s docstring for the same
-    distinction spelled out in more detail, it applies here identically.
-    This works on a protocolFileRootType (a protocol-only file -- see
-    maiml_domain.root.ProtocolFileRootType) exactly as well as on a full
-    maimlRootType, since the whole chain lives under <protocol>, not
-    under <data>/<eventLog>.
+    <placeRef> names that place (see _templates_linked_to_instruction(),
+    maiml_domain.pnml.ArcType/PlaceType, maiml_domain.ref_types.
+    TransitionRefType/PlaceRefType; every hop is checked against real
+    maiml_domain objects, not id strings alone). This is the only link
+    from an instruction to a template the MaiML schema documents -- there
+    is no direct instruction-to-template reference. instruction_id must
+    name an <instruction> that actually exists somewhere in xml_text, or
+    this raises ValueError (a typo'd id is a mistake worth failing loudly
+    on); an instruction_id that does exist but has no template reachable
+    from it (yet) is not an error and returns [] instead -- see
+    get_instances()'s docstring for the same distinction spelled out in
+    more detail, it applies here identically. This works on a
+    protocolFileRootType (a protocol-only file -- see maiml_domain.root.
+    ProtocolFileRootType) exactly as well as on a full maimlRootType,
+    since the whole chain lives under <protocol>, not under
+    <data>/<eventLog>.
 
     xml_text must be schema-valid MaiML: this calls
     pymaiml.serialization.loads(xml_text) and raises whatever loads()
@@ -505,7 +454,7 @@ def get_instances(
     *,
     kind: Optional[str] = None,
     instruction_id: Optional[str] = None,
-) -> List[object]:
+) -> List[Instance]:
     """
     Every material/condition/result *instance* in xml_text's maiml_domain
     object tree (loads(xml_text).root), in document order, as the actual
@@ -533,11 +482,12 @@ def get_instances(
          as the outcome of running this instruction".
       2. instruction -> PNML topology: the same instruction ->
          transitionRef -> transition -> arc -> place -> template chain
-         get_templates()'s instruction_id= uses (see its docstring), one
-         hop further to every instance whose own .ref names one of those
-         templates. This is "which instances are of a template this
-         instruction's transitions are wired to", independent of whether
-         any event has actually recorded one yet.
+         get_templates()'s instruction_id= uses (see its docstring and
+         _templates_linked_to_instruction()), one hop further to every
+         instance whose own .ref names one of those templates. This is
+         "which instances are of a template this instruction's
+         transitions are wired to", independent of whether any event has
+         actually recorded one yet.
 
     instruction_id must name an <instruction> that actually exists
     somewhere in xml_text, or this raises ValueError -- a typo'd id is a
