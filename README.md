@@ -482,11 +482,19 @@ pip install -e ".[docs]"
 mkdocs serve  # http://127.0.0.1:8000 でプレビュー
 ```
 
-`main`ブランチへのpush時に`.github/workflows/docs.yml`がビルド結果を
-`gh-pages`ブランチへ自動デプロイします。リポジトリのSettings > Pagesで
-公開ソースを`gh-pages`ブランチに設定すると、
-https://maiml-library.github.io/PyMaiML/ で閲覧できるようになります
-(このリポジトリではまだGitHub Pages自体を有効化していません)。
+`main`ブランチへのpush/merge時に`.github/workflows/docs.yml`がビルドし、
+GitHub Pages Actionsデプロイ方式(`actions/upload-pages-artifact` +
+`actions/deploy-pages`)でそのまま公開まで自動で行います。`gh-pages`の
+ような生成物置き場のブランチは使いません。`pull_request`時は
+`mkdocs build --strict`によるビルド確認のみ行い、デプロイはしません。
+
+リポジトリでGitHub Pagesを初めて使う場合は、Settings > Pages >
+Build and deployment > Source を **GitHub Actions** に設定してください
+(この一度だけの設定はGitHub Pagesの仕様上、人が行う必要があり、
+ワークフローからは自動化できません)。設定後は
+https://maiml-library.github.io/PyMaiML/ で閲覧でき、以降は`main`への
+push/mergeのたびに完全自動で更新されます(このリポジトリではまだこの
+設定を行っていません)。
 
 ## テスト
 

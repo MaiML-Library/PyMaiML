@@ -1,16 +1,32 @@
-name: Docs
+name: Deploy docs
 
-# API Reference(MkDocs + mkdocstrings)のビルド確認とデプロイ。
+# PyMaiML_docs_auto_deploy.md の方針に基づく、GitHub Pages Actionsデプロイ
+# 方式。以前の `mkdocs gh-deploy`(gh-pagesブランチへのpush)方式から、
+# ビルド成果物をPages artifactとしてアップロードし、
+# actions/deploy-pages で直接デプロイする方式に切り替えた。gh-pages
+# ブランチを成果物置き場として管理する必要がなくなる。
 #
-#   - push (main) / pull_request: `mkdocs build --strict` でビルドが
-#     壊れていないか(docstringの構文エラー・pymdownx.snippetsの参照切れ
-#     など)を確認するだけ(デプロイはしない)。
-#   - main への push 時のみ、ビルド結果を gh-pages ブランチへデプロイする。
-#     このワークフローが行うのは gh-pages ブランチの作成/更新までで、
-#     実際にサイトとして公開するには、リポジトリの Settings > Pages で
-#     公開ソースを "Deploy from a branch" / gh-pages ブランチに設定する
-#     作業が別途必要(まだ有効化していない場合、そこだけ手動で行うこと)。
-#     有効化すると https://maiml-library.github.io/PyMaiML/ で閲覧できる。
+#   main へ push / merge
+#           ↓
+#   GitHub Actions
+#           ↓
+#   Python環境をセットアップ / pip install -e ".[docs]"
+#           ↓
+#   mkdocs build --strict (mkdocstringsによるAPI Reference生成を含む)
+#           ↓
+#   site/ を Pages artifact としてアップロード
+#           ↓
+#   GitHub Pages へ deploy
+#
+# pull_request時は build job(mkdocs build --strict によるビルド確認)
+# だけを実行し、deploy jobはmainへのpush時のみ実行する(PRの内容を本番
+# Pagesへデプロイしてしまわないようにするためのガード)。
+#
+# GitHub側で最初に一度だけ必要な設定:
+#   Settings > Pages > Build and deployment > Source を
+#   "GitHub Actions" にする(この設定自体はワークフローからは自動化
+#   できない -- GitHub Pagesの仕様上、必ず人が一度選ぶ必要がある)。
+# それ以降は、mainへのpush/mergeのたびに完全自動でデプロイされる。
 
 on:
   push:
@@ -20,36 +36,53 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write  # gh-pagesブランチへのpushに必要(mainへのpush時のみ使用)
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
 
 jobs:
   build:
     runs-on: ubuntu-latest
     timeout-minutes: 10
+
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0  # mkdocs gh-deploy(ghp-import)がgitログを参照するため
+      - name: Checkout
+        uses: actions/checkout@v6
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: "3.12"
-          cache: pip
 
-      - name: Install package and docs dependencies
-        run: python -m pip install -e ".[docs]"
+      - name: Install documentation dependencies
+        run: pip install -e ".[docs]"
 
-      - name: Build docs (strict)
+      - name: Configure Pages
+        uses: actions/configure-pages@v5
+
+      - name: Build documentation
         run: mkdocs build --strict
 
-      - name: Configure git identity for gh-deploy
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
+      - name: Upload Pages artifact
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: site
 
-      - name: Deploy to gh-pages
-        if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-        run: mkdocs gh-deploy --force
+  deploy:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

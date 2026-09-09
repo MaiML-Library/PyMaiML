@@ -835,6 +835,53 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   生成物`site/`を追加しています。
 
 
+- **ドキュメントの自動デプロイを、`mkdocs gh-deploy`(`gh-pages`ブランチへの
+  push)方式から、GitHub Pages Actionsデプロイ方式
+  (`actions/upload-pages-artifact` + `actions/deploy-pages`)へ切り替え
+  ました。** 設計文書`PyMaiML_docs_auto_deploy.md`への対応です。
+
+  `.github/workflows/docs.yml`を全面的に書き換え、`main`へのpush/merge時に
+  次の流れでビルド・公開まで自動で行うようにしました。
+
+  ``` text
+  main へ push / merge
+          ↓
+  GitHub Actions
+          ↓
+  Python環境をセットアップ / pip install -e ".[docs]"
+          ↓
+  mkdocs build --strict (mkdocstringsによるAPI Reference生成を含む)
+          ↓
+  site/ を Pages artifact としてアップロード
+          ↓
+  GitHub Pages へ deploy
+  ```
+
+  `gh-pages`ブランチを生成物置き場として管理する必要がなくなり、git
+  identityの設定やブランチへのpush権限(`contents: write`)も不要に
+  なりました(代わりに`pages: write`/`id-token: write`権限を使用)。
+
+  設計文書には無い変更点として、`pull_request`トリガーを残し、PR時は
+  `mkdocs build --strict`によるビルド確認のみを行い、`deploy` jobは
+  `github.event_name == 'push' && github.ref == 'refs/heads/main'`の
+  場合のみ実行するようガードを追加しています(PRの内容を誤って本番の
+  GitHub Pagesへデプロイしてしまわないようにするためで、設計文書自身が
+  採用理由として挙げている「`mkdocs build --strict`によるビルドエラー
+  のCI上での検出」をPRでも維持する意図です)。
+
+  Action本体のバージョン(`actions/checkout@v6`・`actions/setup-python@v6`・
+  `actions/configure-pages@v5`・`actions/upload-pages-artifact@v4`・
+  `actions/deploy-pages@v4`)は設計文書の指定どおりで、実在するタグである
+  ことをGitHub APIで確認済みです。
+
+  GitHub Pages側の設定(Settings > Pages > Build and deployment > Source を
+  「GitHub Actions」にする)は、この切り替え後も引き続き最初の1回だけ
+  人手での設定が必要です(GitHub Pagesの仕様上、ワークフローからは
+  自動化できません)。README.mdの「ドキュメント」節をこの新しい方式に
+  合わせて更新しました。ローカルでの`mkdocs build --strict`実行による
+  ビルド確認・全テストスイート(153件)の再実行は完了しています。
+
+
 ## [0.1.0] - 未リリース
 
 - 初期スキャフォールドのバージョン。
