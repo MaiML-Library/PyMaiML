@@ -45,6 +45,16 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   を追加する際に必ず守るべき制約です。コード変更はなく、ドキュメント
   (`CONTRIBUTING.md`・docstring)のみの追記です。
 
+- **署名済みMaiMLの保存ルールを、MaiML-Signer(外部の署名ツール)の
+  README記載内容を踏まえて再レビュー・拡充しました。** 「XMLとして
+  意味的に同一に見える変更でも、正準化(C14N)結果が変われば署名は保持
+  されない」という同ツールの記載を踏まえ、`CONTRIBUTING.md`のルールに
+  改行コード(CRLF/LF)の変換・属性の並び替え・空要素の記法変更も明記し、
+  Gitの`autocrlf`設定など実務上ありがちな落とし穴と、対策としての
+  `.gitattributes`での`-text`指定を追記しました。
+  `pymaiml.serialization.dumps()`のdocstringにも改行コード変換の注意を
+  追記しています。コード変更はありません。
+
 ## [0.1.0] - 2026-09-11
 
 ### Added
