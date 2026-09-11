@@ -32,6 +32,19 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
 その内容(Domain側で何が変わったか)に応じて上記の基準でバージョンを
 判断してください。
 
+## [Unreleased]
+
+- **署名済みMaiMLファイルの保存に関するルールを明文化しました。**
+  署名済みMaiMLを保存する際は、XMLの再整形(pretty print)・コメント削除・
+  不要な空白削除など、署名対象XMLの正準化結果を変化させる処理を行っては
+  ならないというルールを`CONTRIBUTING.md`の「XML Signature(電子署名)の
+  扱い」節に追記し、`pymaiml.serialization.dumps()`のdocstringにも
+  corollaryとして追記しました。`dumps()`/`dump()`は既存のSignatureを
+  常に出力から除外するため現状はこの問題に直面しませんが、将来
+  「署名済みファイルをそのまま保存・コピーする」機能や署名対応モジュール
+  を追加する際に必ず守るべき制約です。コード変更はなく、ドキュメント
+  (`CONTRIBUTING.md`・docstring)のみの追記です。
+
 ## [0.1.0] - 2026-09-11
 
 ### Added

@@ -646,6 +646,13 @@ def dumps(
     resulting bytes with a dedicated external tool --
     treat "build/edit the MaiML content" and "sign the finished file" as
     two separate steps, in that order, never the other way around.
+
+    Corollary (see CONTRIBUTING.md's "XML Signature" section): once a
+    MaiML file IS signed, never run its bytes through pretty-printing,
+    comment stripping, whitespace collapsing, or any other reformatting
+    when merely saving/copying it -- any of those changes the
+    canonicalization result the signature was computed over, even though
+    pymaiml itself never re-emits a Signature it did not just compute.
     """
     maiml_el = _build_maiml_element(root_obj, extra_namespaces=extra_namespaces)
 
