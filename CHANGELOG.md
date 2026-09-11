@@ -32,7 +32,7 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
 その内容(Domain側で何が変わったか)に応じて上記の基準でバージョンを
 判断してください。
 
-## [Unreleased]
+## [0.1.0] - 2026-09-11
 
 ### Added
 - リポジトリの雛形を作成。`maiml_domain`(MaiML-Domain, v0.1.0タグ)への
@@ -881,7 +881,3 @@ MaiML-Library organization の方針により、MaiML仕様(業務ルール・�
   合わせて更新しました。ローカルでの`mkdocs build --strict`実行による
   ビルド確認・全テストスイート(153件)の再実行は完了しています。
 
-
-## [0.1.0] - 未リリース
-
-- 初期スキャフォールドのバージョン。
